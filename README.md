@@ -42,7 +42,7 @@
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-username/safe-rl-adaptive-shield.git
+   git clone https://github.com/safe-autonomy-lab/AdaptiveShieldingFE.git
    cd safe-rl-adaptive-shield
    ```
 
@@ -51,24 +51,7 @@
    pip install -r requirements.txt
    pip install -e .
    ```
-
-3. **Required Dependencies:**
-   - PyTorch
-   - Gymnasium
-   - NumPy
-   - Matplotlib (for visualization)
-   - Wandb (optional, for experiment tracking)
-
-4. **Download texture assets:**
-   ```bash
-   # For users with the zip file distribution
-   # Download textures in this folder, from Google Drive due to supplementary material size limits
-   https://drive.google.com/file/d/1AP2a_SifAwiM1CIRggGwiWqr62H25IID/view
-   # Unzip the file once you donwload it in this folder
-   # Then, place in the correct directory
-   mv textures envs/safety_gymnasium/assets/
-   ```
-
+   
 ## 🛠️ Usage
 
 Follow these steps in order to train, shield, and evaluate your RL agent:
