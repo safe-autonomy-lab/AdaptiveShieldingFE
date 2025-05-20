@@ -243,6 +243,7 @@ This code leverages and extends:
 - [saferl_kit](https://github.com/zlr20/saferl_kit)
 - [OmniSafe](https://github.com/PKU-Alignment/omnisafe)
 - [Safe-Gym](https://github.com/PKU-Alignment/safety-gymnasium)
+- [FunctionEncoder](https://github.com/tyler-ingebrand/FunctionEncoder)
 
 ## 📜 License
 
