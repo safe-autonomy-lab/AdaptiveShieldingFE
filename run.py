@@ -51,7 +51,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--total-steps',
         type=int,
-        default=500000,
+        default=2000000,
         metavar='STEPS',
         help='total number of steps to train for algorithm',
     )
