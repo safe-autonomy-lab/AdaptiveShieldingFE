@@ -1,0 +1,176 @@
+{
+    "algo": "ShieldedPPOLag",
+    "seed": 1,
+    "env_id": "SafetyCarButton1-v1",
+    "env_cfgs": {
+        "env_config": {
+            "radius": 1.5,
+            "env_info": "SafetyPointGoal2",
+            "max_mult": 1.75,
+            "min_mult": 0.25,
+            "action_dim": 2,
+            "circle_env": false,
+            "use_oracle": false,
+            "example_nbr": 100,
+            "general_env": true,
+            "range_limit": -1,
+            "speed_limit": false,
+            "nbr_of_goals": 1,
+            "nbr_of_gremlins": 0,
+            "change_only_damping": false,
+            "change_only_density": false,
+            "fix_hidden_parameters": false,
+            "use_fe_representation": true,
+            "nbr_of_static_obstacles": 0,
+            "nbr_of_hidden_parameters": 2
+        }
+    },
+    "exp_name": "ShieldedPPOLag-{SafetyCarButton1-v1}",
+    "algo_cfgs": {
+        "lam": 0.95,
+        "clip": 0.2,
+        "gamma": 0.99,
+        "lam_c": 0.95,
+        "use_cost": true,
+        "target_kl": 0.02,
+        "batch_size": 128,
+        "cost_gamma": 0.99,
+        "entropy_coef": 0,
+        "penalty_coef": 0,
+        "update_iters": 40,
+        "kl_early_stop": true,
+        "max_grad_norm": 40,
+        "obs_normalize": true,
+        "cost_normalize": false,
+        "steps_per_epoch": 20000,
+        "use_critic_norm": true,
+        "critic_norm_coef": 0.001,
+        "reward_normalize": false,
+        "use_max_grad_norm": true,
+        "standardized_rew_adv": true,
+        "adv_estimation_method": "gae",
+        "standardized_cost_adv": true
+    },
+    "model_cfgs": {
+        "actor": {
+            "lr": 0.0003,
+            "activation": "tanh",
+            "hidden_sizes": [
+                64,
+                64
+            ]
+        },
+        "critic": {
+            "lr": 0.0003,
+            "activation": "tanh",
+            "hidden_sizes": [
+                64,
+                64
+            ]
+        },
+        "std_range": [
+            0.5,
+            0.1
+        ],
+        "actor_type": "gaussian_learning",
+        "linear_lr_decay": true,
+        "exploration_noise_anneal": false,
+        "weight_initialization_mode": "kaiming_uniform"
+    },
+    "train_cfgs": {
+        "device": "cuda:0",
+        "epochs": 100,
+        "parallel": 1,
+        "total_steps": 2000000,
+        "torch_threads": 16,
+        "vector_env_nums": 4
+    },
+    "logger_cfgs": {
+        "log_dir": "./runs",
+        "use_wandb": true,
+        "window_lens": 100,
+        "wandb_project": "abl1",
+        "save_model_freq": 100,
+        "use_tensorboard": true
+    },
+    "shield_cfgs": {
+        "use_acp": true,
+        "env_info": "SafetyCarButton1",
+        "env_config": {
+            "radius": 1.5,
+            "env_info": "SafetyPointGoal2",
+            "max_mult": 1.75,
+            "min_mult": 0.25,
+            "action_dim": 2,
+            "circle_env": false,
+            "use_oracle": false,
+            "example_nbr": 100,
+            "general_env": true,
+            "range_limit": -1,
+            "speed_limit": false,
+            "nbr_of_goals": 1,
+            "nbr_of_gremlins": 0,
+            "change_only_damping": false,
+            "change_only_density": false,
+            "fix_hidden_parameters": false,
+            "use_fe_representation": true,
+            "nbr_of_static_obstacles": 0,
+            "nbr_of_hidden_parameters": 2
+        },
+        "mo_threshold": 0.275,
+        "penalty_type": "reward",
+        "safety_bonus": 0.05,
+        "sampling_nbr": 10,
+        "gradient_scale": 2,
+        "warm_up_epochs": 20,
+        "enhanced_safety": 1.5,
+        "vector_env_nums": 4,
+        "static_threshold": 0.275,
+        "use_hidden_param": true,
+        "mo_predictor_cfgs": {
+            "epoch": 10,
+            "max_len": 100,
+            "n_basis": 20,
+            "hidden_size": 256,
+            "max_history": 5,
+            "ensemble_size": 2,
+            "learning_rate": 0.001,
+            "least_squares": true,
+            "use_attention": true,
+            "learning_domain": "ts",
+            "average_function": true,
+            "prediction_horizon": 1
+        },
+        "use_online_update": false,
+        "prediction_horizon": 1,
+        "dynamic_predictor_cfgs": {
+            "epoch": 1000,
+            "volume": 1,
+            "max_len": 100,
+            "n_basis": 2,
+            "hidden_size": 512,
+            "max_history": 1,
+            "ensemble_size": 2,
+            "learning_rate": 0.001,
+            "least_squares": true,
+            "use_attention": false,
+            "learning_domain": "ds",
+            "average_function": true
+        },
+        "safety_measure_discount": 0.9
+    },
+    "lagrange_cfgs": {
+        "lambda_lr": 0.035,
+        "cost_limit": 0,
+        "lambda_optimizer": "Adam",
+        "lagrangian_multiplier_init": 0.001
+    },
+    "exp_increment_cfgs": {
+        "train_cfgs": {
+            "device": "cuda:0",
+            "parallel": 1,
+            "torch_threads": 16,
+            "vector_env_nums": 4
+        }
+    }
+}
