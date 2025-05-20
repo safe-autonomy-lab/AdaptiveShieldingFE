@@ -9,7 +9,7 @@ class DynamicPredictorConfig:
     N_BASIS: int = 2
     MAX_LEN: int = 100
     LEARNING_RATE: float = 1e-3
-    EPOCH: int = 10
+    EPOCH: int = 1000
     ENSEMBLE_SIZE: int = 2
     LEAST_SQUARES: bool = True
     AVERAGE_FUNCTION: bool = True
