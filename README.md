@@ -43,7 +43,7 @@
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/safe-autonomy-lab/AdaptiveShieldingFE.git
-   cd safe-rl-adaptive-shield
+   cd AdaptiveShieldingFE
    ```
 
 2. **Install dependencies:**
