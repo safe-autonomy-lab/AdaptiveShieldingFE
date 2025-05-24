@@ -31,11 +31,6 @@ __all__ = [
     'gymnasium_register',
 ]
 
-register(
-    id='PedestrianSim-v0',
-    entry_point='envs.ped_sim:PedSimPred',
-)
-
 VERSION = 'v0'
 ROBOT_NAMES = ('Point', 'Car', 'Doggo', 'Racecar', 'Ant')
 MAKE_VISION_ENVIRONMENTS = True
