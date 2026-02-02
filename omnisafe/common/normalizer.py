@@ -38,7 +38,7 @@ class Normalizer(nn.Module):
     _count: torch.Tensor  # number of samples
     _clip: torch.Tensor  # clip value
 
-    def __init__(self, shape: tuple[int, ...], clip: float = 1e6) -> None:
+    def __init__(self, shape: tuple[int, ...], clip: float = 10000.0) -> None:
         """Initialize an instance of :class:`Normalizer`."""
         super().__init__()
         if shape == ():

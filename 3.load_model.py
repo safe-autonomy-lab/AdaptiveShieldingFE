@@ -1,170 +1,185 @@
 """Script to load and evaluate a saved TRPO model from OmniSafe."""
 import os
 import sys
-import json
-from typing import Dict, Tuple
-
 import numpy as np
 import pandas as pd
 import torch
-import envs
-from omnisafe.models import ActorCritic
-from omnisafe.models.actor_critic.constraint_actor_q_and_v_critic import ConstraintActorQAndVCritic
-from omnisafe.utils.config import Config, ModelConfig
-from configuration import EnvironmentConfig
-from envs.hidden_parameter_env import HiddenParamEnvs
-from omnisafe.envs.wrapper import Normalizer, ObsNormalize
-from omnisafe.shield.vectorized_shield import VectorizedShield
-from configuration import DynamicPredictorConfig
+from organize_run_folders import _find_latest_run_dir, _organize_run_artifacts, _find_latest_epoch_file
+from envs.safety_gymnasium.configuration import EnvironmentConfig
+from envs.hidden_parameter_env import HiddenParamEnvs, VelocityParamEnv
+from shield.vectorized_shield import VectorizedShield
 from omnisafe.evaluator_with_shield import Evaluator
+from load_utils import load_model, load_config, set_seed
+from shield.util import load_model as load_model_shield
+from envs.safety_gymnasium.utils.registration import make
+import logging
 
 
-def load_config(config_path: str) -> Dict:
-    with open(config_path, 'r') as f:
-        config_dict = json.load(f)
-    return config_dict
+def _algo_name_from_penalty(algorithm: str, penalty_type: str) -> str:
+    penalty = str(penalty_type or "").lower()
+    if penalty == "reward":
+        return f"{algorithm}withSRO"
+    if penalty == "sro":
+        base_algo = algorithm
+        if base_algo.startswith("Shielded"):
+            base_algo = base_algo[len("Shielded") :]
+        return f"{base_algo}withSRO"
+    return algorithm
 
-def create_model_config(config_dict: Dict) -> ModelConfig:
-    """Create a ModelConfig object from a configuration dictionary.
-    
-    Args:
-        config_dict: The configuration dictionary
-        
-    Returns:
-        The model configuration object
-    """
-    model_cfg = ModelConfig()
-    model_cfg.actor = Config()
-    model_cfg.critic = Config()
-    
-    # Set actor configuration
-    model_cfg.actor.hidden_sizes = config_dict["model_cfgs"]["actor"]["hidden_sizes"]
-    model_cfg.actor.activation = config_dict["model_cfgs"]["actor"]["activation"]
-    model_cfg.actor.lr = config_dict["model_cfgs"]["actor"]["lr"]
-    
-    # Set critic configuration
-    model_cfg.critic.hidden_sizes = config_dict["model_cfgs"]["critic"]["hidden_sizes"]
-    model_cfg.critic.activation = config_dict["model_cfgs"]["critic"]["activation"]
-    model_cfg.critic.lr = config_dict["model_cfgs"]["critic"]["lr"]
-    
-    # Set other model configurations
-    model_cfg.weight_initialization_mode = config_dict["model_cfgs"]["weight_initialization_mode"]
-    model_cfg.actor_type = config_dict["model_cfgs"]["actor_type"]
-    model_cfg.linear_lr_decay = config_dict["model_cfgs"]["linear_lr_decay"]
-    model_cfg.exploration_noise_anneal = config_dict["model_cfgs"]["exploration_noise_anneal"]
-    model_cfg.std_range = config_dict["model_cfgs"]["std_range"]
-    
-    return model_cfg
 
-def load_model(model_path: str, config: Dict, env) -> Tuple[ActorCritic, Dict]:
-    """Load the saved TRPO model and its configuration.
-    
-    Args:
-        model_path: Path to the saved model weights
-        config: The model configuration dictionary
-        env: The environment instance
-        
-    Returns:
-        Tuple containing the loaded model and its configuration
-    """
-    # Load the saved model weights with CPU
-    checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
-    # for key, we ahve 'pi' and 'obs normalizer'
-    policy_state_dict = checkpoint["pi"]
-    
-    # Create model configuration
-    model_cfg = create_model_config(config)
-    
-    # Create model with the same architecture
-    model = ConstraintActorQAndVCritic(
-        obs_space=env.observation_space,
-        act_space=env.action_space,
-        model_cfgs=model_cfg,
-        epochs=config["train_cfgs"]["epochs"],
-    ).to('cpu')  # Explicitly move to CPU
-    
-    # Load the weights into the model
-    model.actor.load_state_dict(policy_state_dict)    
-    # Set up observation normalization if available
-    if "obs_normalizer" in checkpoint:
-        normalizer = Normalizer(env.observation_space.shape)
-        # training steps 2_000_000
-        normalizer.count = torch.tensor(2_000_000).to('cpu')
-        normalizer.load_state_dict(checkpoint["obs_normalizer"])
-        env = ObsNormalize(env, norm=normalizer, device="cpu")
+def _find_results_dir(env_id: str, algorithm: str, seed: int, prediction_horizon: int) -> str | None:
+    candidates: list[str] = []
+    if algorithm.startswith("Shielded"):
+        base_algo = algorithm[len("Shielded") :]
+        algo_variants = [algorithm, f"{algorithm}withSRO", f"{base_algo}withSRO"]
+        for algo in algo_variants:
+            candidates.append(os.path.join("results", "fe", env_id, f"h{prediction_horizon}", algo, f"seed{seed}"))
+            candidates.append(os.path.join("results", "oracle", env_id, f"h{prediction_horizon}", algo, f"seed{seed}"))
+    else:
+        candidates.append(os.path.join("results", "oracle", env_id, f"h{prediction_horizon}", f"Oracle-{algorithm}", f"seed{seed}"))
+        candidates.append(os.path.join("results", "oracle", env_id, f"h{prediction_horizon}", algorithm, f"seed{seed}"))
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "config.json")):
+            return path
+    return None
 
-    model.eval()
-    return model, env, config
 
-def set_seed(seed: int):
-    import random
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-def main(env_id: str, algorithm: str, seed: int, sampling_nbr: int):
+def main(env_id: str, algorithm: str, seed: int, sampling_nbr: int, prediction_horizon: int, threshold: float, idle_condition: int, scale: float, num_eval_episodes: int, n_basis: int):
     """Main function to load and evaluate the model."""
+    shield_logger = logging.getLogger("shield")
+    shield_logger.propagate = False
+    shield_logger.setLevel(logging.INFO)
     env_info = env_id.split('-')[0]
-    save_env_info = env_info
+    
+    if 'Shielded' not in algorithm:
+        results_dir = f"./results/oracle/{env_id}/h{prediction_horizon}/Oracle-{algorithm}/seed{seed}"
+        runs_base = f"./runs/Oracle-{algorithm}-{env_id}"
+    else:
+        results_dir = f"./results/fe/{env_id}/h{prediction_horizon}/{algorithm}/seed{seed}"
+        runs_base = f"./runs/{algorithm}-{env_id}"
 
-    # for saved model calling, we need to change the env_info to the one
-    env_info = env_info[:-1] + '1'    
-    model_path = f"./saved_models/{env_info}/{algorithm}/seed{seed}/torch_save/epoch-100.pt"
-    config_path = f"./saved_models/{env_info}/{algorithm}/seed{seed}/config.json"
+    run_dir = _find_latest_run_dir(runs_base, seed)
+    if run_dir:
+        organized_dir = _organize_run_artifacts(run_dir, env_id, algorithm, seed)
+        if organized_dir:
+            results_dir = organized_dir
+        torch_save_dir = os.path.join(results_dir, "torch_save")
+        model_path = _find_latest_epoch_file(torch_save_dir)
+        config_path = os.path.join(results_dir, "config.json")
+        load_path = results_dir
+    else:
+        fallback_dir = _find_results_dir(env_id, algorithm, seed, prediction_horizon)
+        if fallback_dir:
+            results_dir = fallback_dir
+        torch_save_dir = os.path.join(results_dir, "torch_save")
+        model_path = _find_latest_epoch_file(torch_save_dir)
+        config_path = os.path.join(results_dir, "config.json")
+        load_path = results_dir
+    if model_path is None:
+        raise FileNotFoundError(f"No epoch-*.pt found in {torch_save_dir}")
+        
     # to get the same result
     set_seed(0)
+    device = 'cpu'
     config = load_config(config_path)
+    shield_cfgs = config.get("shield_cfgs", {})
+    penalty_type = str(shield_cfgs.get("penalty_type", "")).lower()
+    algo_name = _algo_name_from_penalty(algorithm, penalty_type)
+    eval_env_id = (
+        config.get("env_id")
+        or config.get("env_name")
+        or config.get("train_cfgs", {}).get("env_id")
+        or config.get("env_cfgs", {}).get("env_id")
+        or env_id
+    )
     # render_mode = 'human'
     env_config = EnvironmentConfig()
-    # This will trigger out of distribution range sampling [0.1, 0.25] or [1.75, 2.5]
-    env_config.MIN_MULT = -1
-    env_config.MAX_MULT = -1
+    env_config.IS_OUT_OF_DISTRIBUTION = True
+    env_config.FIX_HIDDEN_PARAMETERS = False
+    env_config.NBR_OF_BASIS = n_basis
+    if 'Shielded' not in algorithm:
+        env_config.USE_ORACLE = True
 
-    if 'Circle' in env_id:
-        env_config.SPEED_LIMIT = False
-        env_config.GENERAL_ENV = False
-        env_config.CIRCLE_ENV = True
+    # If environment is not supported by HiddenParamEnvs, it means training was done without it (so no N_BASIS dims were added)
+    
+    if 'Velocity' in eval_env_id:
+        env_config.MIN_MULT = 0.7
+        env_config.MAX_MULT = 1.3
+        unwrapped_env = VelocityParamEnv(eval_env_id, device=device, env_config=env_config, num_envs=1, render_mode='rgb_array')
     else:
-        env_config.RANGE_LIMIT = -1.0
-        env_config.SPEED_LIMIT = False
-        env_config.GENERAL_ENV = True
-        env_config.CIRCLE_ENV = False
-    
-    prediction_horizon = 1 if 'Shield' in algorithm else 0
-    use_acp = False if 'no_ACP' in algorithm else True
+        unwrapped_env = HiddenParamEnvs(eval_env_id, device=device, env_config=env_config, num_envs=1, render_mode='rgb_array')
 
-    # For baselines, we use oracle representation
-    if 'Shield' not in algorithm and 'SafetyObjOnly' not in algorithm:
-        env_config.ORACLE = True
-    
-    unwrapped_env = HiddenParamEnvs(env_id, device="cpu", env_config=env_config, num_envs=1, render_mode='rgb_array')    
-    obs, info = unwrapped_env.reset()
-
-    if 'sigwalls_loc' in info:
-        env_config.RANGE_LIMIT = info['sigwalls_loc'][0] - 0.1
-
-    dp_cfgs = DynamicPredictorConfig()
     
     # Load the model and config
-    model, env, config = load_model(model_path, config, unwrapped_env)
-    if 'Shielded' in algorithm:
-        shield = VectorizedShield(env_info=env_info, dynamic_predictor_cfgs=dp_cfgs, env_config=env_config,\
-                                sampling_nbr=sampling_nbr, prediction_horizon=prediction_horizon, vector_env_nums=1, use_acp=bool(use_acp))
-        shield._setup_environment_params()
+    model, env, config = load_model(model_path, config, unwrapped_env, device=device)
+    if 'Shielded' in algorithm and penalty_type != "sro":
+        dynamics_model_type = shield_cfgs.get("dynamics_model", "fe")
+        dynamic_model = None
+        # Determine base environment name for dynamics predictor
+        # e.g. SafetyPointGoal2-v1 -> SafetyPointGoal1-v1 (assuming using v1 model for v2 task) or specific logic
+        # For now, just using env_info as base path component if needed, or keeping existing logic if correct for project structure
+        # The original code did: env_info[:-1] + '1-v1' which implies replacing '2' with '1'.
+        # Let's keep the path logic consistent with the project's 'saved_files' structure.
+        
+        dynamics_path = f'saved_files/dynamics_predictor/{eval_env_id}'
+        
+        if dynamic_model is None:
+            dynamics_path = f'saved_files/dynamics_predictor/{eval_env_id}'
+            dynamic_model = load_model_shield(
+                dynamics_path,
+                dynamics_model_type,
+                device=device,
+                prediction_horizon=prediction_horizon,
+                seed=seed,
+            )
+        shield = VectorizedShield(
+            dynamic_predictor=dynamic_model,
+            mo_predictor=None,
+            sampling_nbr=sampling_nbr,
+            prediction_horizon=prediction_horizon,
+            vector_env_nums=1,
+            static_threshold=threshold,
+            example_nbr=100,
+            idle_condition=idle_condition,
+            dynamics_model_type=dynamics_model_type,
+            scale=scale,
+        )
         shield.reset()
+        
+        # Inject environment properties manually since we are using unwrapped_env/Eval wrapper
+        shield.is_circle = 'Circle' in env_id
+        shield.is_velocity = 'Velocity' in env_id
+        shield.is_swimmer = 'Swimmer' in env_id
+        shield.is_cheetah = 'Cheetah' in env_id
+        if shield.is_circle and hasattr(unwrapped_env, 'sigwalls_loc'):
+             # This might be tricky if unwrapped_env is a vector wrapper or hidden param wrapper
+             # Assuming standard access pattern or default
+             pass 
+
+        evaluator = Evaluator(env=env, unwrapped_env=unwrapped_env, actor=model, shield=shield, safety_budget=config.get('safety_budget', 1.0))
     else:
         shield = None
-
-    evaluator = Evaluator(env=env, unwrapped_env=unwrapped_env, actor=model.actor, shield=shield)
-    evaluator.load_saved(save_dir=f"./saved_models/{env_info}/{algorithm}/seed{seed}", render_mode="rgb_array", env=env)
-    episode_rewards, episode_costs, episode_lengths, shield_trigger_counts, episode_run_times, episode_hidden_parameters = evaluator.evaluate(num_episodes=100, cost_criteria=1.0, save_plot=False, seed=0)
+        evaluator = Evaluator(env=env, unwrapped_env=unwrapped_env, actor=model.actor, shield=None, safety_budget=config.get('safety_budget', 1.0))
     
-    # Define the output directory and file path
-    output_dir = f"./ood_evaluation_folder/{save_env_info}/{algorithm}_{sampling_nbr}_{prediction_horizon}/seed{seed}"
+    evaluator.load_saved(save_dir=load_path, render_mode="rgb_array", env=env)
+    
+    # Construct output directory
+    if 'Shielded' in algorithm and penalty_type != "sro":
+        suffix = f"_s{sampling_nbr}_th{threshold}_idle{idle_condition}_h{prediction_horizon}_scale{scale}"
+        dir_name = f"{algo_name}{suffix}"
+    elif 'Shielded' in algorithm and penalty_type == "sro":
+        dir_name = algo_name
+    else:
+        dir_name = algorithm
+        
+    output_dir = f"./ood_evaluation_folder/{env_info}/{dir_name}/seed{seed}"
+    
     output_file_path = os.path.join(output_dir, "evaluation_results.csv")
     # Create the directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
-
+    print(f"Saving results to {output_dir}")
+    episode_rewards, episode_costs, episode_lengths, shield_trigger_counts, episode_run_times, episode_hidden_parameters = evaluator.evaluate(num_episodes=num_eval_episodes, cost_criteria=1.0, save_plot=False, seed=seed)
+    
     # Save episode rewards and hidden parameters using numpy's .npz format
     data_file_path = os.path.join(output_dir, "episode_data.npz")
     np.savez(
@@ -200,14 +215,16 @@ def main(env_id: str, algorithm: str, seed: int, sampling_nbr: int):
     results_df.to_csv(output_file_path, index=False)
 
 if __name__ == "__main__":
-    # env_id = "SafetyPointGoal1-v1"  # You can change this to match your environment
-    baselines_algorithms = ['PPOLag', 'TRPOLag', 'CPO', 'USL']
-    our_algorithms = ['ShieldedPPO', 'SafetyObjOnly_PPO', 'ShieldACPPPO', 'ShieldedTRPO', 'SafetyObjOnly_TRPO', 'ShieldACPTRPO']
-    algorithms = baselines_algorithms + our_algorithms
-
+    # env_id = "SafetyPointGoal2-v1"  # You can change this to match your environment
+    # python 4.load_model.py SafetyCarCircle2-v1 ShieldedRCPO_s50_b1.0_i4 0 5 1 0.2 4
     env_id = sys.argv[1]
     algorithm = sys.argv[2]
-    assert algorithm in algorithms, f"Algorithm {algorithm} not in {algorithms}"
     seed = int(sys.argv[3])
     sampling_nbr = int(sys.argv[4])
-    main(env_id, algorithm, seed, sampling_nbr) 
+    prediction_horizon = int(sys.argv[5])
+    threshold = float(sys.argv[6]) # this is the lipschitz constant of the dynamics predictor
+    idle_condition = int(sys.argv[7]) # this control engagement of the shield
+    scale = float(sys.argv[8]) # this controls the diversity of actions sampled from the policy
+    num_eval_episodes = int(sys.argv[9])
+    n_basis = int(sys.argv[10])
+    main(env_id, algorithm, seed, sampling_nbr, prediction_horizon, threshold, idle_condition, scale, num_eval_episodes, n_basis) 

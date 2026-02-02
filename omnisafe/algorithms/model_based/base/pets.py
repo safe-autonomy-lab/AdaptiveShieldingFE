@@ -24,8 +24,14 @@ from typing import Any, Callable
 import numpy as np
 import torch
 from gymnasium.spaces import Box
-from gymnasium.utils.save_video import save_video
-from matplotlib import pylab
+try:
+    from gymnasium.utils.save_video import save_video
+except Exception:  # pragma: no cover - optional dependency
+    save_video = None
+try:
+    from matplotlib import pylab
+except Exception:  # pragma: no cover - optional dependency
+    pylab = None
 
 from omnisafe.adapter import ModelBasedAdapter
 from omnisafe.algorithms import registry
@@ -429,14 +435,15 @@ class PETS(BaseAlgo):
                         'EvalMetrics/EpLen': ep_len,
                     },
                 )
-                save_video(
-                    frames,
-                    save_replay_path,
-                    fps=30,
-                    episode_trigger=lambda x: True,
-                    episode_index=current_step + num_episode,
-                    name_prefix='eval',
-                )
+                if save_video is not None:
+                    save_video(
+                        frames,
+                        save_replay_path,
+                        fps=30,
+                        episode_trigger=lambda x: True,
+                        episode_index=current_step + num_episode,
+                        name_prefix='eval',
+                    )
                 self.draw_picture(
                     timestep=current_step,
                     num_episode=self._cfgs.evaluation_cfgs.num_episode,
@@ -502,6 +509,8 @@ class PETS(BaseAlgo):
         save_replay_path: str = './',
         name: str = 'reward',
     ) -> None:
+        if pylab is None:
+            return
         """Draw a curve of the predicted value and the ground true value.
 
         Args:

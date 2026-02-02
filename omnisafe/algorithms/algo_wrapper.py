@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any
+from typing import Any, Dict
 
 import torch
 
@@ -30,6 +30,7 @@ from omnisafe.utils import distributed
 from omnisafe.utils.config import Config, check_all_configs, get_default_kwargs_yaml
 from omnisafe.utils.plotter import Plotter
 from omnisafe.utils.tools import recursive_check_config
+from omnisafe.envs.wrapper import Normalizer, ObsNormalize
 
 
 class AlgoWrapper:
@@ -230,6 +231,46 @@ class AlgoWrapper:
                 self._evaluator.evaluate(num_episodes=num_episodes, cost_criteria=cost_criteria)
         scan_dir.close()
 
+    def load_model(self, model_path: str, training_steps: int = 2_000_000) -> None:
+        """Load the model and config."""
+        device = self.cfgs.train_cfgs.device
+        checkpoint = torch.load(model_path, map_location=device)
+        # Load observation normalizer if present and configured
+                
+        # Load actor and critics
+        self.agent._actor_critic.actor.load_state_dict(checkpoint['pi'])
+        self.agent._actor_critic.reward_critic.load_state_dict(checkpoint['v_reward'])
+        self.agent._actor_critic.cost_v_critic.load_state_dict(checkpoint['v_cost'])
+        self.agent._actor_critic.cost_q_critic.load_state_dict(checkpoint['q_cost'])
+        
+        # Load optimizers
+        self.agent._actor_critic.reward_critic_optimizer.load_state_dict(checkpoint['reward_optimizers'])
+        self.agent._actor_critic.cost_v_critic_optimizer.load_state_dict(checkpoint['cost_v_optimizers'])
+        self.agent._actor_critic.cost_q_critic_optimizer.load_state_dict(checkpoint['cost_q_optimizers'])
+        
+        # Load Lagrange if present
+        if 'lagrange' in checkpoint:
+            lagrange_data = checkpoint['lagrange']
+            # Assuming self._lagrange is already initialized with same config
+            self.agent._lagrange.lagrangian_multiplier.data = lagrange_data['lagrangian_multiplier']
+            self.agent._lagrange.lambda_optimizer.load_state_dict(lagrange_data['lambda_optimizer'])
+            self.agent._lagrange.lagrangian_multiplier.data.clamp_(
+                0.0, self.agent._lagrange.lagrangian_upper_bound
+            )
+
+        if self.agent._cfgs.algo_cfgs.obs_normalize and 'obs_normalizer' in checkpoint:
+            if "obs_normalizer" in checkpoint:
+                if isinstance(self.agent._env, ObsNormalize):
+                    env = self.agent._env._env
+                else:
+                    env = self.agent._env._env._env
+                normalizer = Normalizer(env.observation_space.shape).to(device)
+                normalizer.count = torch.tensor(training_steps).to(device)
+                normalizer.load_state_dict(checkpoint["obs_normalizer"])
+                env._obs_normalizer = normalizer
+        
+        print("Loaded model successfully from {}".format(model_path))
+        
     # pylint: disable-next=too-many-arguments
     def render(
         self,

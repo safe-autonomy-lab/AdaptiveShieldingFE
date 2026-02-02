@@ -18,19 +18,15 @@ from __future__ import annotations
 
 import json
 import os
+import glob
 import warnings
-from functools import partial
-from typing import Any, Tuple, Dict
+from typing import Any, Dict
 from omnisafe.models.actor_critic.constraint_actor_q_and_v_critic import ConstraintActorQAndVCritic
 
 import numpy as np
 import torch
-import jax
 from gymnasium.spaces import Box
-from gymnasium.utils.save_video import save_video
-from torch import nn
 import time
-import matplotlib.pyplot as plt
 from PIL import Image
 
 from omnisafe.algorithms.model_based.base.ensemble import EnsembleDynamicsModel
@@ -43,23 +39,12 @@ from omnisafe.algorithms.model_based.planner import (
     SafeARCPlanner,
 )
 from omnisafe.common import Normalizer
-from omnisafe.common.control_barrier_function.crabs.models import (
-    AddGaussianNoise,
-    CrabsCore,
-    ExplorationPolicy,
-    MeanPolicy,
-    MultiLayerPerceptron,
-)
-from omnisafe.common.control_barrier_function.crabs.optimizers import Barrier
-from omnisafe.common.control_barrier_function.crabs.utils import Normalizer as CRABSNormalizer
-from omnisafe.common.control_barrier_function.crabs.utils import create_model_and_trainer
-from omnisafe.envs.core import CMDP, make
-from omnisafe.envs.wrapper import ActionRepeat, ActionScale, ObsNormalize, TimeLimit
-from omnisafe.models.actor import ActorBuilder
+from omnisafe.envs.core import CMDP
+from omnisafe.envs.wrapper import ActionScale, TimeLimit
 from omnisafe.models.actor_critic import ConstraintActorCritic, ConstraintActorQCritic
 from omnisafe.models.base import Actor
 from omnisafe.utils.config import Config
-from omnisafe.shield.vectorized_shield import VectorizedShield
+from shield.vectorized_shield import VectorizedShield
 
 t2numpy = lambda x: x.cpu().detach().numpy()
 
@@ -84,6 +69,7 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
         env: CMDP | None = None,
         unwrapped_env: CMDP | None = None,
         actor: Actor | None = None,
+        safety_budget: torch.Tensor | None = None,
         actor_critic: ConstraintActorCritic | ConstraintActorQCritic | None = None,
         dynamics: EnsembleDynamicsModel | None = None,
         planner: (
@@ -104,7 +90,7 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
         self.vector_env_nums = 1
         self._device = torch.device('cpu')
 
-        self._safety_budget: torch.Tensor
+        self._safety_budget: torch.Tensor = safety_budget
         self._safety_obs = torch.ones(1)
         self._cost_count = torch.zeros(1)
         self.__set_render_mode(render_mode)
@@ -165,7 +151,10 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
         action_space = self._env.action_space
         assert isinstance(observation_space, Box), 'The observation space must be Box.'
         assert isinstance(action_space, Box), 'The action space must be Box.'
-        self.normalizer = self._env.get_obs_normalizer()
+        if hasattr(self._env, "get_obs_normalizer"):
+            self.normalizer = self._env.get_obs_normalizer()
+        else:
+            self.normalizer = None
         time_limit = env.max_episode_steps
         if self._env.need_time_limit_wrapper:
             self._env = TimeLimit(self._env, device=torch.device('cpu'), time_limit=time_limit)
@@ -209,10 +198,38 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
             'width': width,
             'height': height,
         }
+        self.env_id = self._cfgs['env_id']
         if self._dict_cfgs.get('env_cfgs') is not None:
             env_kwargs.update(self._dict_cfgs['env_cfgs'])
 
         self.__load_model_and_env(env)
+        self._load_shield_normalizer(save_dir)
+
+    def _load_shield_normalizer(self, save_dir: str) -> None:
+        if self.shield is None or not hasattr(self.shield, "normalizer"):
+            return
+        candidates = glob.glob(os.path.join(save_dir, "shield_normalizer.pt"))
+        if not candidates:
+            return
+        best_epoch = -1
+        best_path = None
+        for path in candidates:
+            name = os.path.basename(path)
+            try:
+                epoch = int(name.split("-")[1].split(".")[0])
+            except (IndexError, ValueError):
+                continue
+            if epoch > best_epoch:
+                best_epoch = epoch
+                best_path = path
+        if best_path is None:
+            return
+        payload = torch.load(best_path, map_location=self._device)
+        state_dict = payload.get("state_dict", payload)
+        try:
+            self.shield.normalizer.load_state_dict(state_dict)
+        except Exception as exc:  # pragma: no cover - defensive for mismatched shapes
+            warnings.warn(f"Failed to load shield normalizer from {best_path}: {exc}")
 
     @property
     def fps(self) -> int:
@@ -295,25 +312,48 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
         episode_run_times: list[float] = []
         shield_trigger_counts: list[float] = []
         episode_hidden_parameters: list[list[float]] = []
-        if self.shield is not None:
-            if not hasattr(self.shield, "_compute_coefs"):
-                self.shield._compute_coefs = self.shield.compute_coefficients_fn()
         
         shield = self.shield
         for episode in range(num_episodes):
             self.frames = []
             obs, info = self._env.reset()
-            start_time = time.time()
-            self._env.set_episode_count(episode)
-            self._safety_obs = torch.ones(1)
+            episode_step = 0
+            self.shield_triggered_count = 0
+            if shield is not None:
+                if hasattr(shield, "example_nbr") and hasattr(shield, "prediction_horizon"):
+                    shield.example_nbr = min(shield.example_nbr, shield.prediction_horizon + 1)
+                if hasattr(self._env, 'get_slices'):
+                    robot_slices = self._env.get_slices()['robot']
+                else:
+                    robot_slices = info['robot'][0]
+                action_low = torch.from_numpy(self._env.action_space.low).to(self._device).float()
+                action_high = torch.from_numpy(self._env.action_space.high).to(self._device).float()
+                if 'Velocity' in self._cfgs['env_id']:
+                    agent_pos, agent_mat = info['x_velocity'].reshape(-1, 1), None
+                else:
+                    agent_pos, agent_mat = shield._process_agent_information(info)
+                robot_original_obs = info['original_obs'][:, robot_slices] if 'original_obs' in info else obs[:, robot_slices]
+                shield.prepare_dp_input(robot_original_obs, agent_pos, agent_mat, device=self._device)
+                shield_trigger = False
+                weights = torch.zeros(self.vector_env_nums, shield.n_basis).to(self._device)
+                shield.coeffs_for_dynamics_prediction = weights
+                shield.normalized_coeffs_for_dynamics_prediction = weights
+                shield.robot_slices = robot_slices
+                # Circle environment has a fixed sigwall location, so call it once here
+                is_circle = ('Circle' in self._cfgs['env_id'])
+                shield.is_circle = is_circle
+                shield.range_limit = shield.static_threshold if is_circle else None
+            self._safety_obs = torch.ones(1).unsqueeze(0)
             ep_ret, ep_cost, length = 0.0, 0.0, 0.0
             self.shield_trigger_count = 0
             self.episode_idx = episode
             self.current_time_step = 0
-            xs_history = []
-            ys_history = []
+
+            start_time = time.time()
+            
 
             done = False
+            normalizer = self.normalizer
             while not done:
                 if save_plot:
                     frame = self._env.render()
@@ -327,36 +367,20 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
                 with torch.no_grad():
                     if self._actor is not None:
                         if self.shield is not None:
-                            one_step_after_condition = self.shield.prev_dp_input is not None
-                            step_condition = self.shield.N < self.shield.example_nbr + 1
-                            agent_pos, agent_mat = self.shield._process_agent_information(info)
-                            if shield.use_fe_representation and one_step_after_condition and step_condition:
-                                obs = shield.add_coefficients_to_obs(obs)
-                                example_x = torch.cat([shield.prev_dp_input, shield.prev_action], axis=-1).cpu().detach().numpy()
-                                example_y = agent_pos
+                            if 'Velocity' in self._cfgs['env_id']:
+                                agent_pos = info['x_velocity'].reshape(-1, 1)
+                                agent_mat = None
+                            else:
+                                agent_pos, agent_mat = shield._process_agent_information(info)
 
-                                xs_history.append(example_x[:, None, :])
-                                ys_history.append(example_y[:, None, :])
+                            original_robot_obs = info['original_obs'][:, robot_slices] if 'original_obs' in info else obs[:, robot_slices]
+                            shield.prepare_dp_input(original_robot_obs, agent_pos, agent_mat, device=self._device)
+                            if shield.prev_dp_input is not None and shield.prev_action is not None:
+                                shield_trigger = shield.update_weights(episode_step)
+                                obs[:, -shield.n_basis:] = shield.normalized_coeffs_for_dynamics_prediction
                                 
-                                example_xs = np.concatenate(xs_history, axis=1)
-                                example_ys = np.concatenate(ys_history, axis=1)
+                            act = self._get_shielded_actions(obs, info, self._actor, self.shield, action_low, action_high, shield_trigger).reshape(1, -1)
 
-                                example_xs = jax.device_put(example_xs)
-                                example_ys = jax.device_put(example_ys)
-
-                                new_ws = shield._compute_coefs(shield.dp_state, example_xs, example_ys)
-                                shield.update_ws(new_ws)
-                                shield.N += 1
-
-                                if shield.N == shield.example_nbr + 1:
-                                    ws = shield.ws.copy()
-                                    shield.ws_representation = ws * shield.scale / np.linalg.norm(ws, axis=1).reshape(-1, 1)        
-                                    xs_history = []
-                                    ys_history = []
-
-                            original_obs = info['original_obs']
-                            self.shield.prepare_dp_input(original_obs, agent_pos, agent_mat, device=self._device)
-                            act = self._get_shielded_actions(obs, info, self._actor, self.shield, self.normalizer, length >= self.shield.max_history - 1, save_plot)
                         else:
                             act = self._actor.predict(
                                 obs.reshape(
@@ -383,6 +407,8 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
                     self._safety_obs -= cost.unsqueeze(-1) / self._safety_budget
                     self._safety_obs /= self._cfgs.algo_cfgs.saute_gamma
 
+                episode_step += 1
+
                 ep_ret += rew.item()
                 ep_cost += (cost_criteria**length) * cost.item()
                 if (
@@ -394,19 +420,23 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
                 self.current_time_step = length
 
                 done = bool(terminated or truncated)
+                if done and shield is not None:
+                    shield.reset()
+                    episode_step = 0
+                    shield_trigger = False
 
             end_time = time.time()
             episode_run_times.append(end_time - start_time)
             episode_rewards.append(ep_ret)
             episode_costs.append(ep_cost)
             episode_lengths.append(length)
-            shield_trigger_counts.append(self.shield_trigger_count)
-            episode_hidden_parameters.append(tuple(info['hidden_parameters'][0].ravel()))
+            shield_trigger_counts.append(self.shield_triggered_count)
+            episode_hidden_parameters.append(tuple(info['hidden_parameters_features'][0].ravel()))
             print(f'Episode {episode} results:')
             print(f'Episode reward: {ep_ret}')
             print(f'Episode cost: {ep_cost}')
             print(f'Episode length: {length}')
-            print(f'Shield triggered: {self.shield_trigger_count}')
+            print(f'Shield triggered: {self.shield_triggered_count}')
             print(f'Episode run time: {end_time - start_time}')
             if save_plot:
                 self.save_frames(start_frame=350, end_frame=750)
@@ -446,6 +476,7 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
             warnings.warn('The fps is not found, use 30 as default.', stacklevel=2)
 
         return fps
+    
 
     def _get_shielded_actions(
         self,
@@ -453,83 +484,65 @@ class Evaluator:  # pylint: disable=too-many-instance-attributes
         info: Dict,
         agent: ConstraintActorQAndVCritic,
         shield: VectorizedShield,
-        normalizer: Normalizer,
-        shield_step_condition: bool,
-        save_plot: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        action_low: torch.Tensor,
+        action_high: torch.Tensor,
+        shield_trigger: bool,
+    ) -> torch.Tensor:
         """Enhanced shielded action selection with safety memory for vectorized environments."""
         # Check presafety condition
         unsafe_mask = shield._check_presafety_condition(info, enhanced_safety=0.15)
         unsafe_mask = torch.from_numpy(unsafe_mask).to(self._device)
         dones = torch.zeros(self.vector_env_nums, device=self._device).bool()
-
-        if not shield_step_condition:
-            agent_pos, agent_mat, goal_pos, hazards, pillars, gremlins = shield.process_info(info, self.vector_env_nums)
-        
-        # if self.warm_up_condition and unsafe_mask.any() and shield_step_condition:
-        if unsafe_mask.any() and shield_step_condition:
-            agent_pos, agent_mat, goal_pos, hazards, pillars, gremlins = shield.process_info(info, self.vector_env_nums)
-            dp_input = t2numpy(shield.dp_input)
-            shield.update_robot_actual_history(agent_pos)
-            dp_acp_region = shield.robot_conformal_threshold
-            dp_acp_region = min(dp_acp_region, 0.1)
-            iter_nbr = 0
-            max_iter_nbr = 1
-            while not dones.all() and iter_nbr < max_iter_nbr:
-                if save_plot:
-                    env_id = self._cfgs['env_id']
-                    # Create evaluation_plot directory if it doesn't exist
-                    plot_dir = os.path.join('evaluation_plot', env_id)
-                    os.makedirs(plot_dir, exist_ok=True)
-                    frame = self._unwrapped_env.render_rgb_array()
-                    # Handle different render output types
-                    frame_path = os.path.join(plot_dir, f'frame_{self.episode_idx}_{self.current_time_step}.png')
-                    plt.imsave(frame_path, frame)
-                    
-                acts = agent.predict_with_multiple_samples_with_seed(obs_tensor_for_policy, n_samples=shield.sampling_nbr, seed=self.episode_idx)
-                action_clipped = np.clip(t2numpy(acts), self._env.action_space.low, self._env.action_space.high)
-                fixed_seed_policy = partial(agent.predict_with_seed, seed=self.episode_idx)
-                
-                is_safe, min_indices, safety_measure = shield.sample_safe_actions(
-                    dp_input,
-                    agent_pos,
-                    agent_mat,
-                    goal_pos,
-                    hazards,
-                    pillars,
-                    gremlins,
-                    first_action=action_clipped,
-                    policy=fixed_seed_policy,
-                    dp_acp_region=dp_acp_region,
-                    device=self._device,
-                    selection_method='top-k',
-                    # selection_method='greedy',
-                    k=max(shield.sampling_nbr // 10, 1),
-                    normalizer=normalizer,
-                )
-                # Save action_clipped and safety_measure with timestamp
-                if False:
-                    timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    save_path = f"shield_data_{timestamp}.npz"
-                    np.savez(
-                        save_path,
-                        action_clipped=action_clipped,
-                        safety_measure=safety_measure
-                    )
-                dones = is_safe | dones    
-                act = acts[min_indices, np.arange(len(min_indices))]
-                
-                if iter_nbr == 0:
-                    final_actions = act.clone()
-                else:
-                    final_actions[dones] = act[dones]
-
-                self.shield_trigger_count += 1
-                iter_nbr += 1
+        # We save robot's position only because conformal prediction is based on robot's position
+        shield.update_robot_actual_history(shield.dp_y)
+        shield.step_last_triggered += 1
+        if shield.shield_triggered:
+            # This way, we make sure the conformal prediction scores are correctly updated, time step matching.
             shield.update_conformality_scores()
             shield._set_conformal_thresholds()
+            shield.shield_triggered = False
+        
+        if shield.step_last_triggered > shield.idle_condition and shield_trigger and shield.prediction_horizon > 0 and unsafe_mask.any():
+            agent_pos, _, buttons, goals, hazards, vases, pillars, push_boxes, gremlins, circle = shield.process_info(info, self.vector_env_nums)
+            with torch.no_grad():
+                acts, value_r, value_c, logps = agent.sample(obs_tensor_for_policy, n_samples=shield.sampling_nbr, scale=shield.scale)
+                action_clipped = acts.clamp(action_low, action_high)
+            
+            is_safe, min_indices, safety_measure = shield.sample_safe_actions(
+                shield.dp_input,
+                agent_pos,
+                buttons,
+                goals,
+                hazards,
+                vases,
+                pillars,
+                push_boxes,
+                gremlins,
+                circle,
+                first_action=action_clipped,
+                device=self._device,
+                selection_method='top-k',
+                k=max(shield.sampling_nbr // 5, 1),
+            )
+            
+            # Save action_clipped and safety_measure with timestamp
+            if False:
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                save_path = f"shield_data_{timestamp}.npz"
+                np.savez(
+                    save_path,
+                    action_clipped=action_clipped,
+                    safety_measure=safety_measure
+                )
+            dones = is_safe | dones    
+            act = acts[min_indices, np.arange(len(min_indices))]
+            logp = logps[min_indices, np.arange(len(min_indices))]
+            
+            self.shield_triggered_count += 1
+            shield.shield_triggered = True
+            shield.step_last_triggered = 0
         else:
-            act = agent.predict(obs_tensor_for_policy)
+            act, value_r, value_c, logp = agent.step(obs_tensor_for_policy)
             shield.shield_triggered = False
 
         shield.prev_action = act

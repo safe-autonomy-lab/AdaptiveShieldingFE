@@ -74,3 +74,12 @@ from envs.safety_gymnasium.tasks.safe_vision.formula_one.formula_one_level2 impo
 from envs.safety_gymnasium.tasks.safe_vision.race.race_level0 import RaceLevel0
 from envs.safety_gymnasium.tasks.safe_vision.race.race_level1 import RaceLevel1
 from envs.safety_gymnasium.tasks.safe_vision.race.race_level2 import RaceLevel2
+
+from envs.safety_gymnasium.tasks.safe_navigation.custom_button.custom_button_base import CustomButtonBase
+from envs.safety_gymnasium.tasks.safe_navigation.custom_button.custom_button_level0 import CustomButtonLevel0
+from envs.safety_gymnasium.tasks.safe_navigation.custom_button.custom_button_level1 import CustomButtonLevel1
+from envs.safety_gymnasium.tasks.safe_navigation.custom_button.custom_button_level2 import CustomButtonLevel2
+from envs.safety_gymnasium.tasks.safe_navigation.custom_goal.custom_goal_base import CustomGoalBase
+from envs.safety_gymnasium.tasks.safe_navigation.custom_goal.custom_goal_level0 import CustomGoalLevel0
+from envs.safety_gymnasium.tasks.safe_navigation.custom_goal.custom_goal_level1 import CustomGoalLevel1
+from envs.safety_gymnasium.tasks.safe_navigation.custom_goal.custom_goal_level2 import CustomGoalLevel2

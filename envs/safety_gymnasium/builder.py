@@ -27,6 +27,7 @@ from envs.safety_gymnasium import tasks
 from envs.safety_gymnasium.bases.base_task import BaseTask
 from envs.safety_gymnasium.utils.common_utils import ResamplingError, quat2zalign
 from envs.safety_gymnasium.utils.task_utils import get_task_class_name
+from envs.safety_gymnasium.configuration import EnvironmentConfig
 
 
 @dataclass
@@ -100,7 +101,7 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
         height: int = 256,
         camera_id: int | None = None,
         camera_name: str | None = None,
-        env_config: dataclass | None = None,
+        env_config: dataclass | None = EnvironmentConfig(),
     ) -> None:
         """Initialize the builder.
 
@@ -129,7 +130,19 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
         self.task_id: str = task_id
         self.config: dict = config
         self.env_config = env_config
-        self.fix_hidden_parameters: bool = env_config.FIX_HIDDEN_PARAMETERS
+        # Setups for customized functions for safety gymnasium
+        is_config_dict =  isinstance(env_config, dict)
+        self.fix_hidden_parameters: bool = env_config.FIX_HIDDEN_PARAMETERS if not is_config_dict else env_config["FIX_HIDDEN_PARAMETERS"]
+        self.use_oracle: bool = env_config.USE_ORACLE if not is_config_dict else env_config["USE_ORACLE"]
+        self.nbr_of_hazards = self.env_config.NBR_OF_HAZARDS if not is_config_dict else env_config["NBR_OF_HAZARDS"]
+        self.nbr_of_pillars = self.env_config.NBR_OF_PILLARS if not is_config_dict else env_config["NBR_OF_PILLARS"]
+        self.nbr_of_vases = self.env_config.NBR_OF_VASES if not is_config_dict else env_config["NBR_OF_VASES"]
+        self.nbr_of_gremlins = self.env_config.NBR_OF_GREMLINS if not is_config_dict else env_config["NBR_OF_GREMLINS"]
+        self.placement_extents = self.env_config.PLACEMENT_EXTENTS if not is_config_dict else env_config["PLACEMENT_EXTENTS"]
+        self.min_mult = self.env_config.MIN_MULT if not is_config_dict else env_config["MIN_MULT"]
+        self.max_mult = self.env_config.MAX_MULT if not is_config_dict else env_config["MAX_MULT"]
+        self.is_out_of_distribution = self.env_config.IS_OUT_OF_DISTRIBUTION if not is_config_dict else env_config["IS_OUT_OF_DISTRIBUTION"]
+        self.obstacle_names_to_track = {'hazards', 'pillars', 'gremlins', 'goal', 'vases', 'buttons', 'push_box', 'circle'}
         
         self._seed: int = None
         self.obs_dims = None
@@ -142,6 +155,14 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
         self.truncated: bool = False
 
         self.render_parameters = RenderConf(render_mode, width, height, camera_id, camera_name)
+
+    def get_slices(self) -> dict:
+        slices = {}
+        dim_idx = 0
+        for obs_key, obs_dim in self.obs_dims.items():
+            slices[obs_key] = slice(dim_idx, dim_idx + obs_dim)
+            dim_idx += obs_dim
+        return slices
 
     def _setup_simulation(self) -> None:
         """Set up mujoco the simulation instance."""
@@ -160,8 +181,14 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
                 name = obstacle.name
             if obstacle.pos is None:
                 continue
-            self.obs_dims[name] = len(self.task._obs_lidar(obstacle.pos, obstacle.group))        
-        self.obs_dims['hidden_parameters'] = self.env_config.NBR_OF_HIDDEN_PARAMETERS
+            
+            if len(obstacle.pos) == 0:
+                continue
+            
+            self.obs_dims[name] = len(self.task._obs_lidar(obstacle.pos, obstacle.group))
+            
+        if self.use_oracle:
+            self.obs_dims['hidden_parameters_dim'] = self.task.world.hidden_parameters_features.shape[0]
         return self.obs_dims
     
     def get_episode_count(self):
@@ -175,10 +202,18 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
         class_name = self.config.get('task_name', get_task_class_name(self.task_id))
         assert hasattr(tasks, class_name), f'Task={class_name} not implemented.'
         task_class = getattr(tasks, class_name)
-        task = task_class(config=self.config)
+        
+        # print('env_config', self.env_config)
+        self.config.update({'NBR_OF_HAZARDS': self.nbr_of_hazards})
+        self.config.update({'NBR_OF_PILLARS': self.nbr_of_pillars})
+        self.config.update({'NBR_OF_VASES': self.nbr_of_vases})
+        self.config.update({'NBR_OF_GREMLINS': self.nbr_of_gremlins})
+        self.config.update({'PLACEMENT_EXTENTS': self.placement_extents})
 
+        task = task_class(config=self.config)
         task.build_observation_space()
-        task.set_env_config(self.env_config)
+        task.set_parameters_range(self.min_mult, self.max_mult)
+        task.setup_hidden_parameters(self.fix_hidden_parameters, self.is_out_of_distribution)
         return task
 
     def set_seed(self, seed: int | None = None) -> None:
@@ -215,8 +250,9 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
         assert cost['cost_sum'] == 0, f'World has starting cost! {cost}'
         # Reset stateful parts of the environment
         self.first_reset = False  # Built our first world successfully
-        self.hidden_parameters = self.task.world.hidden_parameters
-        info['hidden_parameters'] = self.hidden_parameters
+        self.hidden_parameters_features = self.task.world.hidden_parameters_features
+        info['hidden_parameters_features'] = self.hidden_parameters_features
+        info['hidden_parameters_dim'] = self.hidden_parameters_features.shape[0]
         objects_pos, min_distance = self._get_objects_pos_obses()
         info.update(objects_pos)
         info['min_distance'] = min_distance
@@ -236,7 +272,7 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
                 cost = 1.
         
         if hasattr(self.task, 'goal'):
-            info['goal_pos'] = self.task.goal.pos[np.newaxis, :2]
+            info['goal_pos'] = self.task.goal.pos[np.newaxis, :3]
             info['dist2goal'] = self.task.dist_goal()
 
         self.get_obs_dims() if self.obs_dims is None else None
@@ -248,11 +284,12 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
         """Take a step and return observation, reward, cost, terminated, truncated, info."""
         assert not self.done, 'Environment must be reset before stepping.'
         action = np.array(action, copy=False)  # cast to ndarray
+        
         if action.shape != self.action_space.shape:  # check action dimension
-            raise ValueError('Action dimension mismatch')
+            raise ValueError('Action dimension mismatch', 'action.shape', 'self.action_space.shape', action.shape, self.action_space.shape)
 
         info = {}
-        info['hidden_parameters'] = self.hidden_parameters
+        info['hidden_parameters_features'] = self.hidden_parameters_features
 
         exception = self.task.simulation_forward(action)
         if exception:
@@ -316,7 +353,7 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
                 cost = 1.
         
         if hasattr(self.task, 'goal'):
-            info['goal_pos'] = self.task.goal.pos[np.newaxis, :2]
+            info['goal_pos'] = self.task.goal.pos[np.newaxis, :3]
             info['dist2goal'] = self.task.dist_goal()
         
         obs = self.task.obs()
@@ -324,36 +361,44 @@ class Builder(gymnasium.Env, gymnasium.utils.EzPickle):
     
     def _get_objects_pos_obses(self):
         objects_pos = {}
-        min_distance = np.inf
         agent_pos = self.task.agent.pos
-
+        
         objects_pos['agent_pos'] = agent_pos
         objects_pos['agent_mat'] = self.task.agent.mat.flatten()
 
-        agent_xy_pos = agent_pos[:2]
+        # Use only XY coordinates for distance calculation to avoid dimension issues
+        agent_xy = agent_pos[:2]
+        all_obstacle_xy_positions = []
         
+        # First, collect all relevant obstacle positions
         for obstacle in self.task._obstacles:
-            obs_pos = obstacle.pos
-            obs_name = obstacle.name
-            if obs_pos is None:
-                continue
+            if obstacle.name in self.obstacle_names_to_track and obstacle.pos is not None:
+                if len(obstacle.pos) == 0:
+                    continue
+                
+                if isinstance(obstacle.pos[0], np.ndarray):
+                    # Handle list of positions - flatten them into individual positions
+                    for pos in obstacle.pos:
+                        all_obstacle_xy_positions.append(pos[:2])  # Take only XY coordinates
+                        
+                else:
+                    # Handle single position
+                    all_obstacle_xy_positions.append(obstacle.pos[:2])  # Take only XY coordinates
 
-            if obs_name not in ['hazards', 'pillars', 'gremlins', 'goal']:
-                continue            
-            
-            # Handle both single position and list of positions
-            if isinstance(obs_pos[0], np.ndarray):
-                obj_pos = []
-                for pos in obs_pos:
-                    xy_pos = pos[:2]
-                    min_distance = min(min_distance, np.linalg.norm(agent_xy_pos - xy_pos))
-                    obj_pos.append(xy_pos)
-                    
-                objects_pos[f'{obs_name}_pos'] = np.stack(obj_pos, axis=0)
-            else:
-                # Single position case
-                xy_pos = obs_pos[:2]
-                min_distance = min(min_distance, np.linalg.norm(agent_xy_pos - xy_pos))        
+                # Store original positions for info (keeping original structure)
+                objects_pos[obstacle.name] = obstacle.pos
+
+        if not all_obstacle_xy_positions:
+            return objects_pos, np.inf
+
+        # Convert to numpy array - now all elements have consistent shape (2,)
+        obstacle_xy_array = np.array(all_obstacle_xy_positions)
+        
+        # Calculate all distances at once using broadcasting
+        # obstacle_xy_array shape: (N, 2), agent_xy shape: (2,)
+        distances = np.linalg.norm(obstacle_xy_array - agent_xy, axis=1)
+        min_distance = np.min(distances)
+
         return objects_pos, min_distance
 
     def _reward(self) -> float:

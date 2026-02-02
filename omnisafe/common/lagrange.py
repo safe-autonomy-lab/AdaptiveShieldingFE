@@ -135,3 +135,19 @@ class Lagrange:
             0.0,
             self.lagrangian_upper_bound,
         )  # enforce: lambda in [0, inf]
+
+    def save(self, path: str) -> None:
+        """Save the Lagrange state to a file."""
+        state = {
+            'lagrangian_multiplier': self.lagrangian_multiplier.data,  # Scalar tensor
+            'lambda_optimizer': self.lambda_optimizer.state_dict(),    # Optimizer state
+        }
+        torch.save(state, path)
+
+    def load(self, path: str) -> None:
+        """Load the Lagrange state from a file."""
+        state = torch.load(path)
+        self.lagrangian_multiplier.data = state['lagrangian_multiplier']
+        self.lambda_optimizer.load_state_dict(state['lambda_optimizer'])
+        # Apply clamping to ensure consistency (as in update_lagrange_multiplier)
+        self.lagrangian_multiplier.data.clamp_(0.0, self.lagrangian_upper_bound)

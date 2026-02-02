@@ -18,11 +18,9 @@ import copy
 
 from gymnasium import make as gymnasium_make
 from gymnasium import register as gymnasium_register
-
-from envs.safety_gymnasium import vector, wrappers
-from envs.safety_gymnasium.tasks.safe_multi_agent.tasks.velocity.safe_mujoco_multi import make_ma
 from envs.safety_gymnasium.utils.registration import make, register
 from envs.safety_gymnasium.version import __version__
+
 
 __all__ = [
     'register',
@@ -30,6 +28,7 @@ __all__ = [
     'gymnasium_make',
     'gymnasium_register',
 ]
+
 
 VERSION = 'v0'
 ROBOT_NAMES = ('Point', 'Car', 'Doggo', 'Racecar', 'Ant')
@@ -115,37 +114,24 @@ def __combine(tasks, agents, max_episode_steps):
 
 # Button Environments
 # ----------------------------------------
-button_tasks = {
-    'ButtonBase': {'task_name': 'ButtonBase'},
-    'Button0': {},
-    'Button1': {},
-    'Button2': {},
-    'Button3': {},
-}   
+button_tasks = {'ButtonBase': {'task_name': 'ButtonBase'}, 'Button0': {}, 'Button1': {}, 'Button2': {}}   
 __combine(button_tasks, robots, max_episode_steps=1000)
-
 
 # Push Environments
 # ----------------------------------------
-push_tasks = {'PushBase': {'task_name': 'PushBase'}, 'Push0': {}, 'Push1': {}, 'Push2': {}, 'Push3': {}}
+push_tasks = {'PushBase': {'task_name': 'PushBase'}, 'Push0': {}, 'Push1': {}, 'Push2': {}}
 __combine(push_tasks, robots, max_episode_steps=1000)
 
 
 # Goal Environments
 # ----------------------------------------
-goal_tasks = {'GoalBase': {'task_name': 'GoalBase'}, 'Goal0': {}, 'Goal1': {}, 'Goal2': {}, 'Goal3': {}, 'Goal4': {}}
+goal_tasks = {'GoalBase': {'task_name': 'GoalBase'}, 'Goal0': {}, 'Goal1': {}, 'Goal2': {}}
 __combine(goal_tasks, robots, max_episode_steps=1000)
 
 
 # Circle Environments
 # ----------------------------------------
-circle_tasks = {
-    'CircleBase': {'task_name': 'CircleBase'},
-    'Circle0': {},
-    'Circle1': {},
-    'Circle2': {},
-    'Circle3': {},
-}
+circle_tasks = {'CircleBase': {'task_name': 'CircleBase'}, 'Circle0': {}, 'Circle1': {}, 'Circle2': {}}
 __combine(circle_tasks, robots, max_episode_steps=500)
 
 
@@ -153,6 +139,19 @@ __combine(circle_tasks, robots, max_episode_steps=500)
 # ----------------------------------------
 run_tasks = {'RunBase': {'task_name': 'RunBase'}, 'Run0': {}}
 __combine(run_tasks, robots, max_episode_steps=500)
+
+
+# Custom Button Environments
+# ----------------------------------------
+custom_button_tasks = {'CustomButtonBase': {'task_name': 'CustomButtonBase'}, 'CustomButton0': {}, 'CustomButton1': {}, 'CustomButton2': {}}
+__combine(custom_button_tasks, robots, max_episode_steps=1000)
+
+
+# Custom Goal Environments
+# ----------------------------------------
+custom_goal_tasks = {'CustomGoalBase': {'task_name': 'CustomGoalBase'}, 'CustomGoal0': {}, 'CustomGoal1': {}, 'CustomGoal2': {}}
+__combine(custom_goal_tasks, robots, max_episode_steps=1000)
+
 
 
 # ----------------------------------------
@@ -224,7 +223,7 @@ __combine(fading_tasks, robots, max_episode_steps=1000)
 
 __register_helper(
     env_id='SafetyHalfCheetahVelocity-v0',
-    entry_point='envs.safety_gymnasium.tasks.safe_velocity.safety_half_cheetah_velocity_v0:SafetyHalfCheetahVelocityEnv',
+    entry_point='envs.safety_velocity.cheetah_env:VariableCheetahEnv',
     max_episode_steps=1000,
     reward_threshold=4800.0,
 )
@@ -238,7 +237,7 @@ __register_helper(
 
 __register_helper(
     env_id='SafetySwimmerVelocity-v0',
-    entry_point='envs.safety_gymnasium.tasks.safe_velocity.safety_swimmer_velocity_v0:SafetySwimmerVelocityEnv',
+    entry_point='envs.safety_velocity.swimmer_env:VariableSwimmerEnv',
     max_episode_steps=1000,
     reward_threshold=360.0,
 )
@@ -264,7 +263,7 @@ __register_helper(
 
 __register_helper(
     env_id='SafetyHalfCheetahVelocity-v1',
-    entry_point='envs.safety_gymnasium.tasks.safe_velocity.safety_half_cheetah_velocity_v1:SafetyHalfCheetahVelocityEnv',
+    entry_point='envs.safety_velocity.cheetah_env:VariableCheetahEnv',
     max_episode_steps=1000,
     reward_threshold=4800.0,
 )
@@ -278,7 +277,7 @@ __register_helper(
 
 __register_helper(
     env_id='SafetySwimmerVelocity-v1',
-    entry_point='envs.safety_gymnasium.tasks.safe_velocity.safety_swimmer_velocity_v1:SafetySwimmerVelocityEnv',
+    entry_point='envs.safety_velocity.swimmer_env:VariableSwimmerEnv',
     max_episode_steps=1000,
     reward_threshold=360.0,
 )

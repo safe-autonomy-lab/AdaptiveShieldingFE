@@ -193,6 +193,12 @@ class BaseTask(Underlying):  # pylint: disable=too-many-instance-attributes,too-
         self.static_geoms_names: dict
         self.static_geoms_contact_cost: float = None
         self.env_config: dataclass = None
+        self.min_mult: float = 0.25
+        self.max_mult: float = 1.75
+        self.fix_hidden_parameters: bool = False
+        self.is_out_of_distribution: bool = False
+        self.hidden_param_dims: int = 2
+        
         super().__init__(config=config)
         self.action_space = self.agent.action_space
 
@@ -323,8 +329,11 @@ class BaseTask(Underlying):  # pylint: disable=too-many-instance-attributes,too-
         if self._is_load_static_geoms:
             self._build_static_geoms_config(world_config['geoms'])
         
-        if self.env_config is not None:
-            world_config['env_config'] = self.env_config
+        world_config['min_mult'] = self.min_mult
+        world_config['max_mult'] = self.max_mult
+        world_config['fix_hidden_parameters'] = self.fix_hidden_parameters
+        world_config['is_out_of_distribution'] = self.is_out_of_distribution
+        world_config['hidden_param_dims'] = self.hidden_param_dims
 
         return world_config
 
@@ -415,9 +424,16 @@ class BaseTask(Underlying):  # pylint: disable=too-many-instance-attributes,too-
             placements_dict[object_fmt.format(i=i)] = (placements, object_keepout)
         return placements_dict
 
-    def set_env_config(self, env_config: dataclass) -> None:
-        """Set the environment configuration."""
-        self.env_config = env_config
+    def set_parameters_range(self, min_mult: float, max_mult: float) -> None:
+        """Set the parameters range for the task."""
+        self.min_mult = min_mult
+        self.max_mult = max_mult
+    
+    def setup_hidden_parameters(self, fix_hidden_parameters: bool = False, is_out_of_distribution: bool = False, hidden_param_dims: int = 2) -> None:
+        """Set the hidden parameters for the task."""
+        self.fix_hidden_parameters = fix_hidden_parameters
+        self.is_out_of_distribution = is_out_of_distribution
+        self.hidden_param_dims = hidden_param_dims
 
     def obs(self) -> dict | np.ndarray:
         """Return the observation of our agent."""

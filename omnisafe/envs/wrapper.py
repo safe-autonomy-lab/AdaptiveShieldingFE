@@ -199,7 +199,7 @@ class ObsNormalize(Wrapper):
         if norm is not None:
             self._obs_normalizer = norm.to(self._device)
         else:
-            self._obs_normalizer = Normalizer(self.observation_space.shape, clip=5).to(self._device)
+            self._obs_normalizer = Normalizer(self.observation_space.shape, clip=10000).to(self._device)
 
     def get_obs_normalizer(self) -> Normalizer:
         return self._obs_normalizer
@@ -232,6 +232,8 @@ class ObsNormalize(Wrapper):
             info: Some information logged by the environment.
         """
         obs, reward, cost, terminated, truncated, info = super().step(action)
+        # Update running stats before normalizing.
+        self._obs_normalizer.update(obs)
         if 'final_observation' in info:
             final_obs_slice = info['_final_observation'] if self.num_envs > 1 else slice(None)
             info['final_observation'] = info['final_observation'].to(self._device)
@@ -259,6 +261,8 @@ class ObsNormalize(Wrapper):
             info: Some information logged by the environment.
         """
         obs, info = super().reset(seed=seed, options=options)
+        # Update running stats before normalizing.
+        self._obs_normalizer.update(obs)
         info['original_obs'] = obs
         obs = self._obs_normalizer.normalize(obs)
         return obs, info
@@ -333,6 +337,8 @@ class RewardNormalize(Wrapper):
             info: Some information logged by the environment.
         """
         obs, reward, cost, terminated, truncated, info = super().step(action)
+        # Update running stats before normalizing.
+        self._reward_normalizer.update(reward)
         info['original_reward'] = reward
         reward = self._reward_normalizer.normalize(reward)
         return obs, reward, cost, terminated, truncated, info
@@ -406,6 +412,8 @@ class CostNormalize(Wrapper):
             info: Some information logged by the environment.
         """
         obs, reward, cost, terminated, truncated, info = super().step(action)
+        # Update running stats before normalizing.
+        self._cost_normalizer.update(cost)
         info['original_cost'] = cost
         cost = self._cost_normalizer.normalize(cost)
         return obs, reward, cost, terminated, truncated, info
@@ -665,7 +673,7 @@ from typing import Any, Dict, Optional, Tuple
 
 class Normalizer(torch.nn.Module):
     """A normalizer that tracks running mean and variance, supporting masked updates."""
-    def __init__(self, shape: Tuple[int, ...], clip: float = 5.0):
+    def __init__(self, shape: Tuple[int, ...], clip: float = 1e6):
         super().__init__()
         self.shape = shape
         self.clip = clip

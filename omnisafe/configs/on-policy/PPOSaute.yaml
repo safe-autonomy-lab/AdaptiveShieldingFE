@@ -77,7 +77,7 @@ defaults:
     # use cost
     use_cost: False
     # The safety budget, equal to the cost limit
-    safety_budget: 25.0
+    safety_budget: 1.0
     # The saute gamma
     saute_gamma: 0.999
     # The max length of the episode
@@ -126,6 +126,32 @@ defaults:
       activation: tanh
       # learning rate
       lr: 0.0003
+
+  shield_cfgs:
+    static_threshold: 0.275
+    sampling_nbr: 10
+    prediction_horizon: 1
+    safety_bonus: 1.0
+    penalty_type: reward
+    use_fe_representation: True
+    idle_condition: 4
+    dynamics_model: fe
+    n_basis: 16
+  env_cfgs:
+    env_config:
+      fix_hidden_parameters: False
+      use_oracle: True
+      is_out_of_distribution: False
+      min_mult: 0.3
+      max_mult: 1.7
+      hidden_param_dim: 2
+      env_id: SafetyPointGoal1-v1
+      nbr_of_gremlins: 0
+      nbr_of_goals: 1
+      nbr_of_hazards: 1
+      nbr_of_pillars: 1
+      nbr_of_vases: 1
+      placement_extents: 2
 
 SafetyCarCircle1-v0:
   # algorithm configurations

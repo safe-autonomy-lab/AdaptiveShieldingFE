@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -32,9 +33,15 @@ import numpy as np
 import xmltodict
 import yaml
 
+# Set up logging for parameter manipulation
+logging.basicConfig(level=logging.CRITICAL)
+logger = logging.getLogger(__name__)
+
 import envs.safety_gymnasium
 from envs.safety_gymnasium.utils.common_utils import build_xml_from_dict, convert, rot2quat
 from envs.safety_gymnasium.utils.task_utils import get_body_xvelp
+
+from .base_world import BaseWorld
 
 
 # Default location to look for xmls folder:
@@ -55,7 +62,7 @@ class Engine:
         self.data = data
 
 
-class World:  # pylint: disable=too-many-instance-attributes
+class World(BaseWorld):  # pylint: disable=too-many-instance-attributes
     """This class starts mujoco simulation.
 
     And contains some apis for interacting with mujoco."""
@@ -76,23 +83,38 @@ class World:  # pylint: disable=too-many-instance-attributes
         'floor_type': 'mat',
         'task_name': None,
         'env_config': None,
+        # Hidden parameter configuration
+        'min_mult': 0.7,
+        'max_mult': 1.3,
+        'fix_hidden_parameters': False,
+        'is_out_of_distribution': False,
+        'hidden_param_dims': 2,
     }
 
     def __init__(self, agent, obstacles, config=None) -> None:
         """config - JSON string or dict of configuration.  See self.parse()"""
+        
+        # Initialize attributes to None first
+        self.agent_base_path = None
+        self.agent_base_xml = None
+        self.xml = None
+        self.xml_string = None
+        # This is for changing the underyling parameters of the environment
+        self.fix_hidden_parameters = None
+        self.hidden_param_dims = None
+        self.is_out_of_distribution = None
+        self.min_mult = None
+        self.max_mult = None
+        self.rule_out_param = ""
 
         if config:
-            self.parse(config)  # Parse configuration
+            self.parse(config)  # Parse configuration - this will set proper values
 
         self.first_reset = True
 
         self._agent = agent  # pylint: disable=no-member
         self._obstacles = obstacles
         # Since two times of calling this function, we need to reset the episode count
-        self.agent_base_path = None
-        self.agent_base_xml = None
-        self.xml = None
-        self.xml_string = None
 
         self.engine = Engine()
         self.bind_engine()
@@ -102,7 +124,7 @@ class World:  # pylint: disable=too-many-instance-attributes
         self.config = deepcopy(self.DEFAULT)
         self.config.update(deepcopy(config))
         for key, value in self.config.items():
-            assert key in self.DEFAULT, 'Bad key: ' + str(key)
+            assert key in self.DEFAULT, f'Bad key: {str(key)}. Available keys: {list(self.DEFAULT.keys())}'
             setattr(self, key, value)
 
     def bind_engine(self):
@@ -110,6 +132,16 @@ class World:  # pylint: disable=too-many-instance-attributes
         self._agent.set_engine(self.engine)
         for obstacle in self._obstacles:
             obstacle.set_engine(self.engine)
+
+    def setup_hidden_parameters(self, fix_hidden_parameters: bool = False, is_out_of_distribution: bool = False, hidden_param_dims: int = 2):
+        """Set the hidden parameters for the world."""
+        self.fix_hidden_parameters = fix_hidden_parameters
+        self.hidden_param_dims = hidden_param_dims
+    
+    def set_parameters_range(self, min_mult: float, max_mult: float):
+        """Set the parameters range for the world."""
+        self.min_mult = min_mult
+        self.max_mult = max_mult
 
     def build(self):  # pylint: disable=too-many-locals, too-many-branches, too-many-statements
         # episode count will be set outside of the environment
@@ -120,82 +152,6 @@ class World:  # pylint: disable=too-many-instance-attributes
             self.agent_base_xml = f.read()
 
         self.xml = xmltodict.parse(self.agent_base_xml)  # Nested OrderedDict objects
-        assert self.env_config is not None, 'env_config is not set'
-        
-        # circle environment, we change density and gravity
-        circle_env = 'Circle' in self.task_name
-        if self.env_config.FIX_HIDDEN_PARAMETERS:
-            density_mult = 1.0
-            damping_mult = 1.0
-            gravity_mult = 1.0
-            stiffness_mult = 1.0
-            gear_mult = 1.0
-            first_mean = 1.0 # add zeros not to affect to the learning
-            second_mean = 1.0 # add zeros not to affect to the learning
-        else:
-            min_mult = self.env_config.MIN_MULT # 0.25
-            max_mult = self.env_config.MAX_MULT # 1.75
-            # The following condition holds when we test with out of distribution parameters, this won't happen during training!
-            if min_mult < 0 and max_mult < 0:
-                first_mean = 1.0
-                second_mean = 1.0
-                stiffness_mult = 1.0
-                gear_mult = 1.0
-                min_mult = 0.25
-                max_mult = 1.75
-                # For circle env, we only change on the other range due to instability
-                # Sample density multiplier independently
-                density_mult = np.random.uniform(0.1, 0.25) if np.random.choice([0, 1]) == 0 else np.random.uniform(1.75, 2.5)
-                if not circle_env:
-                    damping_mult = np.random.uniform(0.1, 0.25) if np.random.choice([0, 1]) == 0 else np.random.uniform(1.75, 2.5)
-                else:
-                    damping_mult = 1.0
-                gravity_mult = np.random.uniform(0.1, 0.25) if np.random.choice([0, 1]) == 0 else np.random.uniform(1.75, 2.5)
-            # This condition holds during training and in-distribution parameters
-            else:
-                first_mean = (min_mult + max_mult) / 2
-                second_mean = (min_mult + max_mult) / 2
-                density_mult = np.random.uniform(min_mult, max_mult)
-                damping_mult = np.random.uniform(min_mult, max_mult)
-                gravity_mult = np.random.uniform(min_mult, max_mult)
-                stiffness_mult = np.random.uniform(min_mult, max_mult)
-                gear_mult = np.random.uniform(min_mult, max_mult)
-
-        # Doggo-run environment, we change stiffness and gear
-        if '@model' in self.xml['mujoco'] and 'doggo' == self.xml['mujoco']['@model']:
-            self.hidden_parameters = np.array([stiffness_mult - first_mean, gear_mult - second_mean])
-            default_stiffness = float(self.xml['mujoco']['default']['joint']['@stiffness'])
-            default_gear = float(self.xml['mujoco']['default']['motor']['@gear'])
-
-            modified_stiffness = default_stiffness * stiffness_mult
-            modified_gear = default_gear * gear_mult
-
-            self.xml['mujoco']['default']['joint']['@stiffness'] = str(modified_stiffness)
-            self.xml['mujoco']['default']['motor']['@gear'] = str(modified_gear)
-        # The other case, we change damping and density
-        else:
-            self.hidden_parameters = np.array([density_mult - first_mean, damping_mult - second_mean])
-            default_damping = float(self.xml['mujoco']['default']['joint']['@damping'])
-            default_density = float(self.xml['mujoco']['default']['geom']['@density'])
-        
-            if isinstance(self.xml['mujoco']['worldbody']['body']['joint'], list):
-                default_x_damping = float(self.xml['mujoco']['worldbody']['body']['joint'][0]['@damping'])
-                default_y_damping = float(self.xml['mujoco']['worldbody']['body']['joint'][1]['@damping'])
-            else:
-                default_x_damping = float(self.xml['mujoco']['worldbody']['body']['joint']['@damping'])
-            
-            modified_damping = default_damping * damping_mult   
-            modified_density = default_density * density_mult
-            modified_x_damping = default_x_damping * damping_mult
-            
-            self.xml['mujoco']['default']['joint']['@damping'] = str(modified_damping)
-            self.xml['mujoco']['default']['geom']['@density'] = str(modified_density)
-            if isinstance(self.xml['mujoco']['worldbody']['body']['joint'], list):
-                modified_y_damping = default_y_damping * damping_mult
-                self.xml['mujoco']['worldbody']['body']['joint'][0]['@damping'] = str(modified_x_damping)
-                self.xml['mujoco']['worldbody']['body']['joint'][1]['@damping'] = str(modified_y_damping)
-            else:
-                self.xml['mujoco']['worldbody']['body']['joint']['@damping'] = str(modified_x_damping)
                     
         if self.task_name in ['FormulaOne']:  # pylint: disable=no-member
             self.xml['mujoco']['option']['@integrator'] = 'RK4'
@@ -495,12 +451,164 @@ class World:  # pylint: disable=too-many-instance-attributes
         self.xml_string = xmltodict.unparse(self.xml)
         model = mujoco.MjModel.from_xml_string(self.xml_string)  # pylint: disable=no-member
         data = mujoco.MjData(model)  # pylint: disable=no-member
-        # change gravity
-        model.opt.gravity *= gravity_mult
+        
+        # Store default physics parameters for clean manipulation
+        self._store_default_parameters(model)
+        
+        # Apply randomized physics parameters
+        self._apply_physics_parameters(model)
         
         # Recompute simulation intrinsics from new position
         mujoco.mj_forward(model, data)  # pylint: disable=no-member
         self.engine.update(model, data)
+
+    def _store_default_parameters(self, model):
+        """Store the default physics parameters for clean manipulation."""
+        # It's crucial to store the original values so you can reset them
+        # or apply multipliers to a clean slate on each reset.
+        self.default_gravity = np.copy(model.opt.gravity)
+        
+        # Store joint-related parameters
+        if hasattr(model, 'dof_damping') and model.dof_damping is not None:
+            self.default_damping = np.copy(model.dof_damping)
+        else:
+            self.default_damping = None
+            
+        # Store body parameters
+        if hasattr(model, 'body_mass') and model.body_mass is not None:
+            self.default_mass = np.copy(model.body_mass)
+        else:
+            self.default_mass = None
+            
+        if hasattr(model, 'body_inertia') and model.body_inertia is not None:
+            self.default_inertia = np.copy(model.body_inertia)
+        else:
+            self.default_inertia = None
+            
+        # Store geom parameters
+        if hasattr(model, 'geom_friction') and model.geom_friction is not None:
+            self.default_friction = np.copy(model.geom_friction)
+        else:
+            self.default_friction = None
+
+    def _apply_physics_parameters(self, model):
+        """Apply randomized physics parameters directly to the model."""
+        if 'Circle' in self.task_name:
+            self.one_side_param = ["damping_mult"]
+        else:
+            self.one_side_param = [""]
+        
+        # Sample new dynamics multipliers
+        parameters, features_offset = self.sample_hidden_parameters(
+            fix_hidden_parameters=self.fix_hidden_parameters, 
+            is_out_of_distribution=self.is_out_of_distribution, 
+            min_mult=self.min_mult, 
+            max_mult=self.max_mult,
+            out_side_param=self.one_side_param,
+            # max_param_bound=max_param_bound,
+            # min_param_bound=min_param_bound,
+        )
+
+        damping_mult = parameters['damping_mult']
+        gravity_mult = parameters['gravity_mult']
+        mass_mult = parameters['mass_mult']
+        inertia_mult = parameters['inertia_mult']
+        friction_mult = parameters['friction_mult']
+        # Safety validations for parameter bounds
+        assert 0.1 <= damping_mult <= 2.5, f"Unsafe damping multiplier: {damping_mult}"
+        assert 0.1 <= gravity_mult <= 2.5, f"Unsafe gravity multiplier: {gravity_mult}"
+        assert 0.1 <= mass_mult <= 2.5, f"Unsafe mass multiplier: {mass_mult}"
+        assert 0.1 <= inertia_mult <= 2.5, f"Unsafe inertia multiplier: {inertia_mult}"
+        assert 0.1 <= friction_mult <= 2.5, f"Unsafe friction multiplier: {friction_mult}"
+        # Log all sampled parameters for debugging
+        logger.info(f"All hidden parameters - damping:{damping_mult:.3f}, "
+                   f"gravity:{gravity_mult:.3f}, mass:{mass_mult:.3f}, inertia:{inertia_mult:.3f}, friction:{friction_mult:.3f}")
+        
+        # Log if parameters are fixed
+        if self.fix_hidden_parameters:
+            logger.info("Parameters are FIXED (no randomization)")
+        else:
+            logger.info("Parameters are RANDOMIZED")
+            
+        # Apply gravity multiplier
+        new_gravity = self.default_gravity * gravity_mult
+        model.opt.gravity[:] = new_gravity
+        logger.debug(f"Gravity: {self.default_gravity} -> {new_gravity}")
+
+        hidden_parameter_features = []
+        
+        # Apply other parameters based on availability
+        if self.default_damping is not None:
+            new_damping = self.default_damping * damping_mult
+            model.dof_damping[:] = new_damping
+            logger.debug(f"Damping range: {new_damping.min():.3f} - {new_damping.max():.3f}")
+            hidden_parameter_features.append(damping_mult - features_offset)
+            
+        if self.default_mass is not None:
+            new_mass = self.default_mass * mass_mult
+            # Only modify non-zero masses to preserve zero masses (e.g., for fixed bodies)
+            mask = self.default_mass > 0
+            model.body_mass[mask] = new_mass[mask]
+            # Validate non-zero masses for safety
+            if np.any(mask):
+                assert np.all(new_mass[mask] > 0), "Non-zero mass must remain positive for stability"
+                logger.debug(f"Mass range (non-zero): {new_mass[mask].min():.3f} - {new_mass[mask].max():.3f}")
+                hidden_parameter_features.append(mass_mult - features_offset)
+            else:
+                logger.debug("No non-zero masses to modify")
+        
+        if self.default_inertia is not None:
+            new_inertia = self.default_inertia * inertia_mult  # Inertia scales with mass
+            # Only modify non-zero inertias to preserve zero inertias (e.g., for fixed bodies)
+            mask = self.default_inertia > 0
+            model.body_inertia[mask] = new_inertia[mask]
+            # Validate non-zero inertias for stability
+            if np.any(mask):
+                assert np.all(new_inertia[mask] > 0), "Non-zero inertia must remain positive for stability"
+            hidden_parameter_features.append(inertia_mult - features_offset)
+
+        if self.default_friction is not None:
+            new_friction = self.default_friction * friction_mult
+            model.geom_friction[:] = new_friction
+            # Validate friction bounds
+            assert np.all(new_friction >= 0), "Friction must be non-negative"
+            logger.debug(f"Friction range: {new_friction.min():.3f} - {new_friction.max():.3f}")
+            hidden_parameter_features.append(friction_mult - features_offset)
+
+        self.hidden_parameters_features = np.array(hidden_parameter_features)
+
+    def reset_physics_parameters(self):
+        """Reset physics parameters to defaults and apply new randomization."""
+        if not hasattr(self, 'default_gravity'):
+            raise RuntimeError("Default parameters not stored. Call build() first.")
+            
+        model = self.engine.model
+        
+        logger.info("Resetting physics parameters to defaults before applying new randomization")
+        
+        # Reset to defaults before applying new multipliers
+        model.opt.gravity[:] = self.default_gravity
+        
+        if self.default_damping is not None:
+            model.dof_damping[:] = self.default_damping
+            
+        if self.default_mass is not None:
+            model.body_mass[:] = self.default_mass
+            
+        if self.default_inertia is not None:
+            model.body_inertia[:] = self.default_inertia
+            
+        if self.default_friction is not None:
+            model.geom_friction[:] = self.default_friction
+
+        # Apply new randomization
+        self._apply_physics_parameters(model)
+        
+        # Reset simulation state and perform a forward pass
+        mujoco.mj_resetData(model, self.data)
+        mujoco.mj_forward(model, self.data)
+        
+        logger.info("Physics parameter reset completed successfully")
 
     def rebuild(self, config=None, state=True):
         """Build a new sim from a model if the model changed."""
@@ -518,6 +626,13 @@ class World:  # pylint: disable=too-many-instance-attributes
         """Reset the world. (sim is accessed through self.sim)"""
         if build:
             self.build()
+        else:
+            # Use clean parameter manipulation without rebuilding
+            if hasattr(self, 'default_gravity'):
+                self.reset_physics_parameters()
+            else:
+                # Fallback to full build if defaults not stored
+                self.build()
 
     def body_com(self, name):
         """Get the center of mass of a named body in the simulator world reference frame."""

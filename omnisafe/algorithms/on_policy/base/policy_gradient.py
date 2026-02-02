@@ -31,8 +31,12 @@ from omnisafe.algorithms.base_algo import BaseAlgo
 from omnisafe.common.buffer import VectorOnPolicyBuffer, VectorOnPolicyDictBuffer
 from omnisafe.common.logger import Logger
 from omnisafe.models.actor_critic.constraint_actor_critic import ConstraintActorCritic
+from omnisafe.models.actor_critic.constraint_actor_q_and_v_critic import ConstraintActorQAndVCritic
+from omnisafe.common.lagrange import Lagrange
 from omnisafe.utils import distributed
-from omnisafe.shield.vectorized_shield import VectorizedShield
+
+from shield.vectorized_shield import VectorizedShield
+from shield.util import load_model
 
 
 @registry.register
@@ -104,14 +108,27 @@ class PolicyGradient(BaseAlgo):
                 epochs=[0, self._cfgs.train_cfgs.epochs],
                 std=self._cfgs.model_cfgs.std_range,
             )
-        
         self.vector_env_nums = self._cfgs.train_cfgs.vector_env_nums
+        
         if hasattr(self._cfgs, 'shield_cfgs'):
-            if self._cfgs.shield_cfgs['env_config']['use_fe_representation']:
-                print('Using FE representation')
-                self._cfgs.shield_cfgs['env_info'] = self._cfgs.env_id.split('-')[0]
+            if self._cfgs.shield_cfgs['use_fe_representation']:
+                env_id = self._env_id
+                env_info = env_id.split('-')[0]
+                self._cfgs.shield_cfgs['env_info'] = env_info
                 self._cfgs.shield_cfgs['vector_env_nums'] = self.vector_env_nums
-                self._shield = VectorizedShield(**self._cfgs.shield_cfgs)
+                self.env_info = env_info
+                prediction_horizon = getattr(self._cfgs.shield_cfgs, "prediction_horizon", None)
+                dynamics_predictor = load_model(
+                    f'saved_files/dynamics_predictor/{env_info}-v1',
+                    'dynamics_predictor',
+                    prediction_horizon=prediction_horizon,
+                )
+                mo_predictor = None
+                self._shield = VectorizedShield(dynamic_predictor=dynamics_predictor, mo_predictor=mo_predictor, **self._cfgs.shield_cfgs)
+                self.safety_bonus = self._shield.safety_bonus
+                self._obs_normalizer = None
+                if self._cfgs.algo_cfgs.obs_normalize:
+                    self._obs_normalizer = self._env._env.get_obs_normalizer()
             else:
                 self._shield = None
                 print('Not using shield')
@@ -210,6 +227,8 @@ class PolicyGradient(BaseAlgo):
 
         what_to_save: dict[str, Any] = {}
         what_to_save['pi'] = self._actor_critic.actor
+        what_to_save['v_reward'] = self._actor_critic.reward_critic
+        
         if self._cfgs.algo_cfgs.obs_normalize:
             obs_normalizer = self._env.save()['obs_normalizer']
             what_to_save['obs_normalizer'] = obs_normalizer

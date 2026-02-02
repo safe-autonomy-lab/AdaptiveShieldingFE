@@ -187,10 +187,26 @@ class Logger:  # pylint: disable=too-many-instance-attributes
             path = os.path.join(self._log_dir, 'torch_save', f'epoch-{self._epoch}.pt')
             os.makedirs(os.path.dirname(path), exist_ok=True)
 
-            params = {
-                k: v.state_dict() if hasattr(v, 'state_dict') else v
-                for k, v in self._what_to_save.items()
-            }
+            params = {}
+            for k, v in self._what_to_save.items():
+                if k == 'lagrange':
+                    # Manually extract serializable state for Lagrange
+                    params[k] = {
+                        'lagrangian_multiplier': v.lagrangian_multiplier.data,  # Scalar tensor
+                        'lambda_optimizer': v.lambda_optimizer.state_dict(),    # Optimizer state
+                        # Include hypers if not stored in config (for recreation on load)
+                        'cost_limit': v.cost_limit,
+                        'lambda_lr': v.lambda_lr,
+                        'lagrangian_upper_bound': v.lagrangian_upper_bound,
+                        'lambda_optimizer_type': type(v.lambda_optimizer).__name__,  # e.g., 'Adam'
+                    }
+                elif hasattr(v, 'state_dict'):
+                    # Handles models, optimizers, schedulers
+                    params[k] = v.state_dict()
+                else:
+                    # Fallback for simple types (e.g., scalars, but unlikely)
+                    params[k] = v
+            
             torch.save(params, path)
 
     def register_key(

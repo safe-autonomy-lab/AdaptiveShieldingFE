@@ -18,14 +18,10 @@ from omnisafe.algorithms.on_policy.base.natural_pg import NaturalPG
 from omnisafe.algorithms.on_policy.base.policy_gradient import PolicyGradient
 from omnisafe.algorithms.on_policy.base.ppo import PPO
 from omnisafe.algorithms.on_policy.base.trpo import TRPO
-from omnisafe.algorithms.on_policy.base.shielded_ppo import ShieldedPPO
-from omnisafe.algorithms.on_policy.base.shielded_trpo import ShieldedTRPO
 
 __all__ = [
     'NaturalPG',
     'PolicyGradient',
     'PPO',
     'TRPO',
-    'ShieldedPPO',
-    'ShieldedTRPO',
 ]

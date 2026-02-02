@@ -27,7 +27,7 @@ from omnisafe.common.buffer import VectorOnPolicyBuffer
 from omnisafe.common.logger import Logger
 from omnisafe.models.actor_critic.constraint_actor_critic import ConstraintActorCritic
 from omnisafe.utils.config import Config
-from omnisafe.shield.vectorized_shield import VectorizedShield
+from shield.vectorized_shield import VectorizedShield
 
 
 class OnPolicyAdapter(OnlineAdapter):
@@ -81,55 +81,36 @@ class OnPolicyAdapter(OnlineAdapter):
         self._reset_log()
 
         obs, info = self.reset()
+        vec_num_envs = obs.shape[0]
+        episode_step = 0
         if shield is not None:
-            obs_dims = info['obs_dims'] if isinstance(info['obs_dims'], dict) else info['obs_dims'][0]['robot']
-            shield.obs_dims = obs_dims
-            shield._setup_environment_params()
+            robot_slices = self._env.get_slices()['robot']
             agent_pos, agent_mat = shield._process_agent_information(info)
-            shield.prepare_dp_input(info['original_obs'], agent_pos, agent_mat, device=self._device)
-            shield.agent_pos = agent_pos   
-            shield.agent_mat = agent_mat
-            xs_history = []
-            ys_history = []
-            if not hasattr(shield, "_compute_coefs"):
-                shield._compute_coefs = shield.compute_coefficients_fn()
-            
+            robot_original_obs = info['original_obs'][:, robot_slices]
+            shield.prepare_dp_input(robot_original_obs, agent_pos, agent_mat, device=self._device)            
+            weights = torch.zeros(vec_num_envs, shield.n_basis).to(self._device)
+            shield.coeffs_for_dynamics_prediction = weights
+            shield.normalized_coeffs_for_dynamics_prediction = weights
+            shield.robot_slices = robot_slices
+                
         for step in track(
             range(steps_per_epoch),
             description=f'Processing rollout for epoch: {logger.current_epoch}...',
         ):
             if shield is not None:
-                obs = shield.add_coefficients_to_obs(obs)
-                step_condition = shield.N < shield.example_nbr + 1
                 one_step_after_condition = shield.prev_dp_input is not None
-                # if self.warm_up_condition and step_condition and one_step_after_condition:
+                step_condition = episode_step < shield.example_nbr + 1
                 agent_pos, agent_mat = shield._process_agent_information(info)
-                if step_condition and one_step_after_condition:
-                    example_x = torch.cat([shield.prev_dp_input, shield.prev_action], axis=-1).cpu().detach().numpy()
-                    example_y = agent_pos
-                    
-                    xs_history.append(example_x[:, None, :])
-                    ys_history.append(example_y[:, None, :])
-                    
-                    example_xs = np.concatenate(xs_history, axis=1)
-                    example_ys = np.concatenate(ys_history, axis=1)
+                if one_step_after_condition and step_condition:
+                    shield_trigger = shield.update_weights(episode_step)
+                    shield_trigger = shield_trigger and logger.current_epoch > shield.warm_up_epochs
 
-                    example_xs = jax.device_put(example_xs)
-                    example_ys = jax.device_put(example_ys)
-
-                    new_ws = shield._compute_coefs(shield.dp_state, example_xs, example_ys)
-                    shield.update_ws(new_ws)
-                    shield.N += 1
-
-                    if shield.N == shield.example_nbr + 1:
-                        ws = shield.ws.copy()
-                        shield.ws_representation = ws * shield.scale / np.linalg.norm(ws, axis=1).reshape(-1, 1)        
-                        xs_history = []
-                        ys_history = []
+                robot_original_obs = info['original_obs'][:, robot_slices]
+                shield.prepare_dp_input(robot_original_obs, agent_pos, agent_mat, device=self._device)
+                # We use the representation of the function encoder
                 
-                original_obs = info['original_obs']
-                shield.prepare_dp_input(original_obs, agent_pos, agent_mat, device=self._device)
-
+                obs = shield.add_coefficients_to_obs(obs)
+                
             act, value_r, value_c, logp = agent.step(obs)
             next_obs, reward, cost, terminated, truncated, info = self.step(act)
             if shield is not None:
@@ -153,6 +134,7 @@ class OnPolicyAdapter(OnlineAdapter):
 
             obs = next_obs
             epoch_end = step >= steps_per_epoch - 1
+            episode_step += 1
             if epoch_end:
                 num_dones = int(terminated.contiguous().sum())
                 if self._env.num_envs - num_dones:
@@ -205,6 +187,9 @@ class OnPolicyAdapter(OnlineAdapter):
                         self._ep_collision_cost[idx] = 0.0
                         self._ep_discomfort_cost[idx] = 0.0
 
+                    episode_step = 0
+                    if shield is not None:
+                        shield.reset()
                     buffer.finish_path(last_value_r, last_value_c, idx)
 
     def _log_value(

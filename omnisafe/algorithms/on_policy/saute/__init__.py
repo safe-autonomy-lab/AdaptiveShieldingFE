@@ -16,9 +16,11 @@
 
 from omnisafe.algorithms.on_policy.saute.ppo_saute import PPOSaute
 from omnisafe.algorithms.on_policy.saute.trpo_saute import TRPOSaute
+from omnisafe.algorithms.on_policy.saute.rcpo_saute import RCPOSaute
 
 
 __all__ = [
     'TRPOSaute',
     'PPOSaute',
+    'RCPOSaute',
 ]

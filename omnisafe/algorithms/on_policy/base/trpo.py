@@ -154,6 +154,7 @@ class TRPO(NaturalPG):
         logp: torch.Tensor,
         adv_r: torch.Tensor,
         adv_c: torch.Tensor,
+        original_obs: torch.Tensor,
     ) -> None:
         """Update policy network.
 
@@ -177,9 +178,9 @@ class TRPO(NaturalPG):
         theta_old = get_flat_params_from(self._actor_critic.actor)
         self._actor_critic.actor.zero_grad()
         adv = self._compute_adv_surrogate(adv_r, adv_c)
-        loss = self._loss_pi(obs, act, logp, adv)
+        loss = self._loss_pi(obs, act, logp, adv, original_obs=original_obs)
         loss_before = distributed.dist_avg(loss)
-        p_dist = self._actor_critic.actor(obs)
+        p_dist = self._actor_critic.actor(obs, original_obs=original_obs)
 
         loss.backward()
         distributed.avg_grads(self._actor_critic.actor)
@@ -203,6 +204,7 @@ class TRPO(NaturalPG):
             logp=logp,
             adv=adv,
             loss_before=loss_before,
+            original_obs=original_obs,
         )
 
         theta_new = theta_old + step_direction

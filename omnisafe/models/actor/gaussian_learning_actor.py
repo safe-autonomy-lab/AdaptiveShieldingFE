@@ -99,21 +99,8 @@ class GaussianLearningActor(GaussianActor):
             return self._current_dist.mean
         return self._current_dist.rsample()
     
-    def predict_with_seed(self, obs: torch.Tensor, seed: int = 0) -> torch.Tensor:
-        """Predict the action given observation with a specific seed.
-
-        Args:
-            obs (torch.Tensor): Observation from environments.
-            seed (int, optional): Seed. Defaults to 0.
-        """
-        self._current_dist = self._distribution(obs)
-        generator = torch.Generator(device=self.log_std.device)
-        generator.manual_seed(seed)
-        self._after_inference = True
-        return self._current_dist.rsample()
-    
-    def predict_with_multiple_samples(self, obs: torch.Tensor, n_samples: int = 10) -> torch.Tensor:
-        """Predict the action given observation with multiple samples.
+    def sample(self, obs: torch.Tensor, n_samples: int = 10, scale: float = 0.1) -> torch.Tensor:
+        """Sample the actions given observation.
 
         Args:
             obs (torch.Tensor): Observation from environments.
@@ -124,24 +111,9 @@ class GaussianLearningActor(GaussianActor):
         """
         self._current_dist = self._distribution(obs)
         self._after_inference = True
+        self._current_dist.scale = torch.tensor([scale]).to(self._current_dist.scale.device)
         return self._current_dist.rsample((n_samples,))
     
-    def predict_with_multiple_samples_with_seed(self, obs: torch.Tensor, n_samples: int = 10, seed: int = 0) -> torch.Tensor:
-        """Predict the action given observation with multiple samples.
-
-        Args:
-            obs (torch.Tensor): Observation from environments.
-            n_samples (int, optional): Number of samples. Defaults to 10.
-
-        Returns:
-            The action sampled from the distribution.
-        """
-        self._current_dist = self._distribution(obs)
-        generator = torch.Generator(device=self.log_std.device)
-        generator.manual_seed(seed)
-        self._after_inference = True
-        return self._current_dist.rsample((n_samples,))
-
     def forward(self, obs: torch.Tensor) -> Distribution:
         """Forward method.
 

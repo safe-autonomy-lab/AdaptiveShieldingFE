@@ -63,18 +63,21 @@ from omnisafe.algorithms.on_policy import (
     TRPOLag,
     TRPOSaute,
     TRPOSimmerPID,
-    ShieldedPPO,
-    ShieldedTRPO,
-    ShieldedPPOLag,
-    ShieldedTRPOLag,
+    RCPOSaute,
 )
 
+from shield.algorithms.shielded_ppo import ShieldedPPO
+from shield.algorithms.shielded_trpo import ShieldedTRPO
+from shield.algorithms.shielded_ppo_lag import ShieldedPPOLag
+from shield.algorithms.shielded_trpo_lag import ShieldedTRPOLag
+from shield.algorithms.shielded_rcpo import ShieldedRCPO
 
 ALGORITHMS = {
     'on-policy': tuple(on_policy.__all__),
     'off-policy': tuple(off_policy.__all__),
     'model-based': tuple(model_based.__all__),
     'offline': tuple(offline.__all__),
+    'shield': ('ShieldedPPO', 'ShieldedTRPO', 'ShieldedPPOLag', 'ShieldedTRPOLag', 'ShieldedRCPO'),
 }
 
 ALGORITHM2TYPE = {

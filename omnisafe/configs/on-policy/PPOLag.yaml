@@ -130,70 +130,31 @@ defaults:
     lambda_optimizer: "Adam"
   # environment specific configurations
   shield_cfgs:
-    dynamic_predictor_cfgs:
-      n_basis: 2
-      learning_rate: 0.001
-      least_squares: True
-      average_function: True
-      hidden_size: 512
-      use_attention: False
-      learning_domain: ds
-      max_history: 1
-      volume: 1
-      max_len: 100
-      ensemble_size: 2
-      epoch: 100
-
-    env_config:
-      fix_hidden_parameters: False
-      use_oracle: False
-      use_fe_representation: False
-      nbr_of_hidden_parameters: 2
-      range_limit: 1.125
-      radius: 1.0
-      example_nbr: 100
-      max_mult: 1.75
-      min_mult: 0.25
-      speed_limit: False
-      general_env: True
-      circle_env: False
-      nbr_of_gremlins: 0
-      nbr_of_static_obstacles: 0
-      nbr_of_goals: 1
-      env_info: SafetyPointGoal2
-      action_dim: 2
-    static_threshold: 0.25
-    sampling_nbr: 3
-    use_hidden_param: True
-    use_online_update: False
-    enhanced_safety: 1.0
+    static_threshold: 0.275
+    sampling_nbr: 10
+    prediction_horizon: 1
     safety_bonus: 1.0
-    gradient_scale: 2.0
     penalty_type: reward
-    warm_up_epochs: 15
-    prediction_horizon: 2
-    safety_measure_discount: 0.9
-    use_acp: False
-    
+    use_fe_representation: True
+    idle_condition: 4
+    dynamics_model: fe
+    n_basis: 16
   env_cfgs:
     env_config:
       fix_hidden_parameters: False
-      use_oracle: False
-      use_fe_representation: False
-      nbr_of_hidden_parameters: 2
-      range_limit: 1.125
-      radius: 1.0
-      example_nbr: 100
-      max_mult: 1.75
-      min_mult: 0.25
-      speed_limit: False
-      general_env: True
-      circle_env: False
+      use_oracle: True
+      is_out_of_distribution: False
+      min_mult: 0.3
+      max_mult: 1.7
+      hidden_param_dim: 2
+      env_id: SafetyPointGoal1-v1
       nbr_of_gremlins: 0
-      nbr_of_static_obstacles: 0
       nbr_of_goals: 1
-      env_info: SafetyPointGoal2
-      action_dim: 2
+      nbr_of_hazards: 1
+      nbr_of_pillars: 1
+      nbr_of_vases: 1
+      placement_extents: 2
+      
 ShadowHandCatchOver2UnderarmSafeFinger:
   # training configurations
   train_cfgs:

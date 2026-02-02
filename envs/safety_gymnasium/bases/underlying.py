@@ -240,7 +240,7 @@ class Underlying(abc.ABC):  # pylint: disable=too-many-instance-attributes
             config (dict): Configuration dictionary.
         """
         for key, value in config.items():
-            if key in ['agent_name', 'task_name']:
+            if key in ['agent_name', 'task_name', 'NBR_OF_HAZARDS', 'NBR_OF_PILLARS', 'NBR_OF_WALLS', 'NBR_OF_APPLES', 'NBR_OF_ORANGES', 'NBR_OF_BUTTONS', 'NBR_OF_CIRCLES', 'NBR_OF_GOALS', 'NBR_OF_STAGED_GOALS', 'NBR_OF_GREMLINS', 'NBR_OF_VASES', 'PLACEMENT_EXTENTS']:
                 continue
             if '.' in key:
                 obj, key = key.split('.')
@@ -295,7 +295,7 @@ class Underlying(abc.ABC):  # pylint: disable=too-many-instance-attributes
     def reset(self) -> None:
         """Reset the environment."""
         self._build()
-        self.hidden_parameters = self.world.hidden_parameters
+        self.hidden_parameters_features = self.world.hidden_parameters_features
         # Save the layout at reset
         self.world_info.reset_layout = deepcopy(self.world_info.layout)
 
@@ -526,7 +526,7 @@ class Underlying(abc.ABC):  # pylint: disable=too-many-instance-attributes
                     camera_name,
                 )
 
-        self._get_viewer(mode)
+        self._get_viewer(mode, width, height)
 
         # Turn all the geom groups on
         self.viewer.vopt.geomgroup[:] = 1
@@ -554,18 +554,20 @@ class Underlying(abc.ABC):  # pylint: disable=too-many-instance-attributes
         # Draw vision pixels
         if mode in {'rgb_array', 'depth_array'}:
             # Extract depth part of the read_pixels() tuple
-            data = self._get_viewer(mode).render(render_mode=mode, camera_id=camera_id)
+            data = self._get_viewer(mode, width, height).render(render_mode=mode, camera_id=camera_id)
             self.viewer._markers[:] = []  # pylint: disable=protected-access
             self.viewer._overlays.clear()  # pylint: disable=protected-access
             return data
         if mode == 'human':
-            self._get_viewer(mode).render()
+            self._get_viewer(mode, width, height).render()
             return None
         raise NotImplementedError(f'Render mode {mode} is not implemented.')
 
     def _get_viewer(
         self,
-        mode: str,
+        mode: str, 
+        width: int,
+        height: int,
     ) -> (
         safety_gymnasium.utils.keyboard_viewer.KeyboardViewer
         | gymnasium.envs.mujoco.mujoco_rendering.RenderContextOffscreen
@@ -579,7 +581,7 @@ class Underlying(abc.ABC):  # pylint: disable=too-many-instance-attributes
                     self.agent.keyboard_control_callback,
                 )
             elif mode in {'rgb_array', 'depth_array'}:
-                self.viewer = OffScreenViewer(self.model, self.data)
+                self.viewer = OffScreenViewer(self.model, self.data, width=width, height=height)
             else:
                 raise AttributeError(f'Unexpected mode: {mode}')
 

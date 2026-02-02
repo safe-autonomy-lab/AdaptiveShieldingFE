@@ -1,60 +1,76 @@
-# Runtime Safety through Adaptive Shielding: From Hidden Parameter Inference to Provable Guarantees
+# Adaptive Shielding for Safe Reinforcement Learning under Hidden-Parameter Dynamics Shifts
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+## Repository Structure
+This repository includes the following key directories and files to support our safe reinforcement learning (RL) framework with function encoder representation learning:
 
-## 📋 Table of Contents
-- [Overview](#-overview)
-- [Features](#-features)
-- [Installation](#-installation)
-- [Usage](#-usage)
-- [Evaluation and Visualization](#-evaluation-and-visualization)
-- [Advanced Configuration](#-advanced-configuration)
-- [Supported Algorithms](#-supported-algorithms)
-- [Acknowledgements](#-acknowledgements)
-- [License](#-license)
+- **OmniSafe**: We include the `omnisafe` directory to integrate function encoder representation learning with safe RL algorithms implemented by OmniSafe.
+- **FunctionEncoder**: This directory contains the `FunctionEncoder` module, including the transition dataset dataclass and utilities for model saving and loading.
+- **Shield**: The `shield` directory houses all supported shielded algorithms, including the shielding mechanism and Safe Reinforced Optimization (SRO).
+- **Onpolicy_wrapper.py and adapter_wrapper.py**: These files provide the main components for interacting with safe RL algorithms, facilitating policy training and evaluation.
+- **Configuration Files**:
+  - Baseline algorithm parameters are located in `omnisafe/configs/on-policy`.
+  - Shielding algorithm parameters are located in `omnisafe/configs/shield`.
 
-## 📖 Overview
 
-**Adaptive Shielding** is a framework that combines safety-related objectives (SRO) with learned dynamics models to actively shield RL agents from unsafe actions in environments with hidden dynamics. Our approach:
+## Overview
+For function encoder, check the folder `FunctionEncoder`, we directly copied the folder and modified relevant part from [FunctionEncoder](https://github.com/tyler-ingebrand/FunctionEncoder) for our usage.
 
-- Builds on **Constrained Hidden-Parameter MDPs**
-- Uses **Function Encoders** for real-time inference of unobserved parameters
-- Employs **conformal prediction** to provide probabilistic safety guarantees with minimal runtime overhead
+For Conformal preidction, check files `./shield/conformal_prediction.py`, `./shield/base_shield.py`, and `./shield/vectorized_shield.py`.
 
-## ✨ Features
+To integrate shielding with algorithm, we need a seperate policy wrapper, like `./shield/adapter_wrapper.py` and `./shield/onpolicy_wrapper.py`. 
 
-- **Problem Addressed:** Variations in hidden parameters (e.g., a robot's mass distribution or friction) introduce safety risks at deployment time.
+To use safety-regularized optimization (SRO), we need `./shield/model/constraint_actor_q_and_v_critic.py`, adding Q-value estimation. Accordingly, we also need shielded algorithm code `./shield/algorithms/` for each shielded version of RL algorithms. 
 
-- **Core Components:**  
-  - **Function Encoders** infer latent dynamics from recent transitions
-  - **Safety-regularized objective (SRO)** incentivizes minimal safety violations during training
-  - **Runtime shield** forecasts one-step safety risks and blocks unsafe actions
-  - **Conformal prediction** quantifies uncertainty for probabilistic safety guarantees
+We provide a one shot script (train dynamics, collect dataset, train policy, evaluate policy) in `train.sh`. Read Usage section for more detail.
 
-- **Key Benefits:**  
-  - Rigorous safety guarantees  
-  - Fast online adaptation  
-  - Strong out-of-distribution (OOD) generalization  
-  - Minimal overhead compared to unconstrained RL  
 
-## 🚀 Installation
+## Installation
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/safe-autonomy-lab/AdaptiveShieldingFE.git
-   cd AdaptiveShieldingFE
-   ```
-
-2. **Install dependencies:**
+1. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
    pip install -e .
    ```
-   
-## 🛠️ Usage
 
-Follow these steps in order to train, shield, and evaluate your RL agent:
+2. **Download texture assets:**
+   ```bash
+   # For users with the zip file distribution
+   # Download textures from https://github.com/PKU-Alignment/safety-gymnasium/tree/main/safety_gymnasium/assets/textures
+   # Then, place in the correct directory
+   mv textures envs/safety_gymnasium/assets/
+   ```
+
+## Usage
+
+Follow these steps in order to train, shield, and evaluate your RL agent.
+We provide a one-shot train + evaluation script in `train.sh` that runs the entire pipeline from data collection to evaluation in a single file.
+
+### Quickstart (Single-File Pipeline)
+
+Run everything (collect transitions → train dynamics → train policy → evaluate) with:
+```bash
+# Bash pipeline (edit variables at top of file)
+bash train.sh
+```
+
+To change algorithm, environment, horizon, and other settings, edit the variables at the top of `train.sh`:
+- `ENV_ID`: environment id (e.g., `SafetyHalfCheetahVelocity-v1`)
+- `ALGO_NAME`: algorithm (e.g., `ShieldedRCPO`, `FOCOPS`)
+- `HORIZON`: prediction horizon
+- `SEED`, `N_BASIS`, `TOTAL_STEPS`, `PENALTY_TYPE`, etc.
+- Evaluation grid: `SAMPLING_NBRS`, `THRESHOLDS`, `IDLE_CONDITIONS`, `SCALES`
+
+Note: This workflow uses random policy transitions by default (`USE_TRAINED_POLICY=0`). Set it to `1` after running the optional pre-training step below.
+
+### Quickstart (Python Pipeline)
+
+You can also run the full workflow using the Python pipeline with flags:
+```bash
+# Python pipeline (flags override defaults)
+python train_pipeline.py --env-id SafetyHalfCheetahVelocity-v1 --algo ShieldedRCPO --horizon 7 --seed 100
+```
+
+Both scripts skip transition collection and dynamics training automatically for non-shielded algorithms.
 
 ### 1. (Optional) Pre-train Policies for Data Collection
 
@@ -66,18 +82,17 @@ python 0.train_policies.py SafetyPointGoal1-v1 2000000
 ### 2. Collect Transitions Dataset
 
 ```bash
-# Arguments: <env_id> <num_episodes> <use_trained_policy>
-# Set use_trained_policy=1 if you completed step 1, otherwise 0 for random policy
-python 1.collect_transition.py SafetyPointGoal1-v1 1000 0
+# Arguments: <env_id> <num_episodes> <use_trained_policy> <prediction_horizon>
+# Set use_trained_policy=1 if you completed step 1, otherwise 0 for random policy.
+# Note: the collector uses the base env (e.g., SafetyPointGoal1-v1 -> SafetyPointGoal1-v0) for non-velocity tasks.
+python 1.collect_transition.py SafetyPointGoal1-v1 1000 0 1
 ```
 
-### 3. Train Function Encoder
-
-Function encoder settings can be configured in the `configuration.py` file.
+### 3. Train Dynamics Predictor (Function Encoder / Transformer / PEM / Oracle)
 
 ```bash
-# Arguments: <env_id> <seed> <use_wandb>
-python 2.compare_dynamic_predictors.py SafetyPointGoal1-v1 0 0
+# Example: train FE dynamics model for 1-step prediction (uses data from step 2)
+python 2.train_dynamics_predictor.py --env_id SafetyPointGoal1-v1 --dynamics_model fe --prediction_horizon 1 --seed 0
 ```
 
 ### 4. Train with Adaptive Shielding
@@ -85,51 +100,48 @@ python 2.compare_dynamic_predictors.py SafetyPointGoal1-v1 0 0
 ```bash
 # Generic command
 python run.py \
-  --env_id <env_id> \
+  --env-id <env_id> \
   --algo <algorithm> \
-  --prediction_horizon <0|1> \
+  --prediction-horizon <0|1|k> \
   --penalty-type <reward|shield> \
   --sampling-nbr <sampling_number> \
   --safety-bonus <bonus_weight> \
+  --idle-condition 4 \
   --use-wandb <True|False> \
-  --fe-representation <True|oracle> \
-  --use-acp <True|False> \
+  --fe-representation <True|False> \
   --project-name <project_name>
 ```
 
 **Available algorithms:**
-- Shielded algorithms: `ShieldedTRPOLag`, `ShieldedPPOLag`
-- Baseline algorithms: `PPOLag`, `TRPOLag`, `CPO` (these use oracle representation automatically)
+- Shielded algorithms: `ShieldedTRPOLag`, `ShieldedPPOLag`, `ShieldedRCPO`
+- Baseline algorithms: `PPOLag`, `TRPOLag`, `CUP`, `CPO`, `TRPOSaute`, `PPOSaute`, `FOCOPS`, `RCPO`, `RCPOSaute` (these use oracle representation automatically, unless it's specified)
 
 **Example command:**
 ```bash
 python run.py \
   --env-id SafetyPointGoal1-v1 \
-  --algo ShieldedTRPOLag \
+  --algo ShieldedRCPO \
   --prediction-horizon 1 \
   --penalty-type reward \
   --sampling-nbr 10 \
   --safety-bonus 1. \
+  --idle-condition 4 \
   --use-wandb True \
   --fe-representation True \
-  --use-acp True \
   --project-name shield 
 ```
 
 #### Key Parameters:
-- `--prediction-horizon`: 0 (no shielding), 1 (one-step ahead shielding)
+- `--prediction-horizon`: positive integer for one-step or multi-step shielding (values <=0 are treated as 1 in `run.py`)
 - `--penalty-type`: `reward` (use SRO), `shield` (do not use SRO during optimization)
-- `--fe-representation`: `True` (function encoder adaptation), `oracle` (ground-truth adaptation)
+- `--fe-representation`: `True` (function encoder adaptation), `False` (oracle adaptation)
 - `--sampling-nbr`: Number of action samples when adaptive shield is triggered
 - `--safety-bonus`: Weight of safety in the augmented objective
+- `--idle-condition`: Control frequent Shielding trigger, letting terms between activation of the Shielding
 
-#### Common Configurations:
-
-| Mode                     | Parameters                                    |
-|--------------------------|-----------------------------------------------|
-| **SRO only**             | `--prediction-horizon 0 --penalty-type reward` |
-| **Shield only**          | `--prediction-horizon 1 --penalty-type shield` |
-| **Combined approach**    | `--prediction-horizon 1 --penalty-type reward` |
+#### Notes:
+- Shielding is only applied for `Shielded*` algorithms. Use baseline algorithms to disable shielding entirely.
+- `--penalty-type` controls SRO: `reward` enables SRO-style optimization; `shield` disables SRO but keeps the shield.
 
 ### 5. Run Unrolling Safety Layer (USL) Baseline
 
@@ -142,85 +154,45 @@ python run_usl.py --env SafetyPointGoal1-v1 --use_usl --seed 0 --oracle --save_m
 ```
 
 ### 6. Evaluate OOD Generalization
+After training, you can find the trained model in the generated `runs` folders.
+Organized results are saved under `results/` and the algorithm folder name reflects `penalty_type`:
+- `reward` -> `Shielded*withSRO`
+- `sro` -> `<BaseAlgo>withSRO` (e.g., `RCPOwithSRO`)
+- `shield` -> `Shielded*`
 
 For OOD testing, use environments with level 2 (e.g., SafetyPointGoal2-v1). These environments have:
 - 2 additional hazard spaces 
 - Hidden parameters sampled from OOD range
-- Use `prediction_horizon=1` to enable shielding, `0` to disable it
+- Shielding is only used for `Shielded*` algorithms; baselines ignore shield settings
+
+Also, we can control presafety condition `threshold`, higher `threshold` value leads to more conservative shielding trigger, e.g., trigger shield in distance 10, instead of 5. Scale factor control sampling diversity, when we check future steps. Idle condition controls shielding frequency. These parameters can be used as test-time tunning where the other baselines do not have.
 
 ```bash
 # Generic command
-python 3.load_model.py <env_id> <algorithm> <seed> <sampling_nbr> <prediction_horizon>
+python 3.load_model.py <env_id> <algorithm> <seed> <sampling_nbr> <prediction_horizon> <threshold> <idle_condition> <scale> <num_eval_episodes> <n_basis>
 
 # Example command
-python 3.load_model.py SafetyPointGoal2-v1 ShieldedTRPO 0 100 1
+python 3.load_model.py SafetyPointGoal2-v1 ShieldedTRPO 0 100 1 0.25 4 0.05 100 4
 ```
 
-## 🔍 Evaluation and Visualization
+### One-Line Training (pipeline sample)
+Use the pipeline wrapper to run training in a single command (matches `train_pipeline.py`/`train.sh` defaults):
+```bash
+python train_pipeline.py --env-id SafetyPointPush1-v1 --algo ShieldedRCPO --horizon 1 --penalty-type reward --total-steps 2000000 --seed 2 --n-basis 4 --safety-bonus 1.0
+```
 
-### Data Management
+For SLURM servers, use the provided launcher:
+```bash
+bash run.sh
+```
 
-1. **Download data from Wandb:**
-   ```bash
-   # Use your project name (default: shield)
-   python plot_wandb_data_download.py shield
-   ```
+After OOD evaluation finishes, aggregate Pareto-optimal results (reads all config folders, not just `Shield_*`):
+```bash
+python pareto_report.py --aggregate-root ood_evaluation_folder
+```
 
-2. **Organize downloaded data:**
-   ```bash
-   # For run.py experiments:
-   python plot_organize_dir.py omni
-   
-   # For USL experiments:
-   python plot_organize_dir.py skit
-   ```
 
-### Generate Analysis Plots
-
-- **Research Questions:**
-  ```bash
-  python plot_rq1.py  # Performance comparison
-  python plot_rq2.py  # OOD analysis
-  python plot_rq3.py  # Core component evaluations
-  ```
-
-- **Ablation Studies:**
-  ```bash
-  python plot_abl_ppo.py
-  python plot_abl_lag_lr.py
-  python plot_abl_rep.py
-  python plot_abl_training_hp.py
-  python plot_abl_ood_hp.py
-  ```
-
-## 🔧 Advanced Configuration
-
-### Function Encoder Settings
-
-The Function Encoder's configurations can be modified in `configuration.py`, including:
-- Network architecture
-- Training parameters
-- Inference settings
-
-### Environment Parameters
-
-For environment-specific hidden parameters and difficulty levels:
-- Level 1 environments (e.g., SafetyPointGoal1-v1): Standard training environments
-- Level 2 environments (e.g., SafetyPointGoal2-v1): OOD test environments with different parameter distributions
-
-## ⚙️ Supported Algorithms
-
-- **Shielding** (`omnisafe/algorithms/on_policy/shield/`):  
-  - `ShieldedTRPOLag`  
-  - `ShieldedPPOLag`  
-
-- **Function Encoder Representations**:  
-  - `CPO`, `PPOLag`, `TRPOLag`
-
-- **Oracle Representations**:  
-  - Any on-policy algorithm from [OmniSafe](https://github.com/PKU-Alignment/omnisafe)
-
-## 📚 Acknowledgements
+## Acknowledgements
 
 This code leverages and extends:
 - [saferl_kit](https://github.com/zlr20/saferl_kit)
@@ -228,6 +200,6 @@ This code leverages and extends:
 - [Safe-Gym](https://github.com/PKU-Alignment/safety-gymnasium)
 - [FunctionEncoder](https://github.com/tyler-ingebrand/FunctionEncoder)
 
-## 📜 License
+## License
 
 Distributed under the MIT License. See `LICENSE` for details. 
