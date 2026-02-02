@@ -141,7 +141,7 @@ python run.py \
 
 #### Notes:
 - Shielding is only applied for `Shielded*` algorithms. Use baseline algorithms to disable shielding entirely.
-- `--penalty-type` controls SRO: `reward` enables SRO-style optimization; `shield` disables SRO but keeps the shield.
+- `--penalty-type` controls SRO: `reward` is for SRO + Shielding; `sro` uses only SRO; `shield` disables SRO but keeps the shield.
 
 ### 5. Run Unrolling Safety Layer (USL) Baseline
 
